@@ -74,7 +74,7 @@ function ConsolePage() {
 
   const setSearch = useCallback(
     (patch: Partial<ConsoleSearch>) => {
-      navigate({ to: ".", search: (prev) => ({ ...prev, ...patch }), replace: true });
+      navigate({ to: "/console", search: (prev: ConsoleSearch) => ({ ...prev, ...patch }), replace: true });
     },
     [navigate],
   );
