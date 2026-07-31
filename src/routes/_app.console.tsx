@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 import { OctagonX, Play, Plug, PlugZap, Square } from "lucide-react";
 import { toast } from "sonner";
@@ -58,7 +58,7 @@ export const Route = createFileRoute("/_app/console")({
 
 function ConsolePage() {
   const search = Route.useSearch();
-  const navigate = useNavigate();
+  const navigate = Route.useNavigate();
   const queryClient = useQueryClient();
 
   const { data: robots = [] } = useQuery(robotsQuery());
