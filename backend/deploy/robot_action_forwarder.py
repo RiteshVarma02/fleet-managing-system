@@ -1,0 +1,245 @@
+#!/usr/bin/env python3
+"""
+Robot action forwarder for cross-domain navigation (UPDATED VERSION).
+Run this on the robot domain (domain 2 or 3) to forward goals.
+
+IMPROVEMENTS:
+- Better feedback messages with timestamps
+- Intermediate status updates (IN_PROGRESS)
+- Better error handling and logging
+- Proper callback sequencing
+"""
+
+import rclpy
+from rclpy.node import Node
+from rclpy.action import ActionClient
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
+from nav2_msgs.action import NavigateToPose
+from geometry_msgs.msg import PoseStamped
+from std_msgs.msg import String
+import os
+import time
+
+class RobotActionForwarder(Node):
+    def __init__(
+        self,
+        robot_id="robot_1",
+        robot_domain=2,
+        goal_topic="/goal_request",
+        status_topic="/navigation_status"
+    ):
+        super().__init__('robot_action_forwarder')
+        
+        self.robot_id = robot_id
+        self.robot_domain = robot_domain
+        self.goal_topic = goal_topic
+        self.status_topic = status_topic
+        self.callback_group = ReentrantCallbackGroup()
+        
+        # Track current goal
+        self.current_goal_handle = None
+        self.goal_start_time = None
+        
+        # Action client to the local robot action server
+        self.navigate_client = ActionClient(
+            self, 
+            NavigateToPose, 
+            '/navigate_to_pose',
+            callback_group=self.callback_group
+        )
+        
+        # Topic subscriber for goal requests from server
+        # Note: domain_bridge should remap /robot_X/goal_request -> /goal_request on robot domain
+        self.goal_sub = self.create_subscription(
+            PoseStamped,
+            self.goal_topic,
+            self.goal_callback,
+            10,
+            callback_group=self.callback_group
+        )
+        
+        # Topic publisher for feedback/results
+        # Note: domain_bridge should remap /navigation_status -> /robot_X/navigation_status on server domain
+        self.status_pub = self.create_publisher(
+            String,
+            self.status_topic,
+            10
+        )
+        
+        self.get_logger().info(
+            f'✓ Initialized forwarder for {robot_id} (domain {robot_domain})\n'
+            f'  goal_topic={self.goal_topic}\n'
+            f'  status_topic={self.status_topic}'
+        )
+        self._publish_status('READY')
+
+    def _publish_status(self, status: str, message: str = ""):
+        """Helper to publish status messages"""
+        if message:
+            msg_data = f'[{self.robot_id}] {status}: {message}'
+        else:
+            msg_data = f'[{self.robot_id}] {status}'
+        
+        status_msg = String()
+        status_msg.data = msg_data
+        self.status_pub.publish(status_msg)
+        self.get_logger().info(f'📤 STATUS: {msg_data}')
+
+    def goal_callback(self, msg: PoseStamped):
+        """Callback when server sends a goal via topic"""
+        self.get_logger().info(
+            f'📥 GOAL RECEIVED: x={msg.pose.position.x:.2f}, '
+            f'y={msg.pose.position.y:.2f}, z={msg.pose.position.z:.2f}'
+        )
+        
+        # Cancel previous goal if exists
+        if self.current_goal_handle is not None:
+            self.get_logger().warn('⚠️  Cancelling previous goal...')
+            try:
+                cancel_future = self.current_goal_handle.cancel_goal_async()
+                cancel_future.result(timeout_sec=1.0)
+            except Exception as e:
+                self.get_logger().warn(f'Could not cancel previous goal: {e}')
+        
+        self.send_nav_goal(msg)
+
+    def send_nav_goal(self, pose_msg: PoseStamped):
+        """Send navigation goal to the robot's action server"""
+        
+        # Wait for action server
+        self.get_logger().info('⏳ Waiting for nav2 action server...')
+        if not self.navigate_client.wait_for_server(timeout_sec=5.0):
+            self.get_logger().error('✗ navigate_to_pose action server NOT available!')
+            self._publish_status('ERROR', 'Nav2 action server unavailable')
+            return False
+        
+        self.get_logger().info('✓ Nav2 action server available')
+        self._publish_status('SENDING_GOAL', f'Sending goal ({pose_msg.pose.position.x:.2f}, {pose_msg.pose.position.y:.2f})')
+        
+        # Create goal
+        goal_msg = NavigateToPose.Goal()
+        goal_msg.pose = pose_msg
+        
+        self.goal_start_time = time.time()
+        
+        # Send goal and attach callbacks
+        self.get_logger().info(f'🎯 Sending goal to nav2...')
+        future = self.navigate_client.send_goal_async(
+            goal_msg,
+            feedback_callback=self.feedback_callback
+        )
+        future.add_done_callback(self.goal_response_callback)
+        return True
+
+    def feedback_callback(self, feedback_msg):
+        """Handle navigation feedback (called periodically during navigation)"""
+        try:
+            elapsed = time.time() - self.goal_start_time
+            self.get_logger().debug(f'⚙️  Feedback at {elapsed:.1f}s')
+            
+            # Publish intermediate status
+            if elapsed > 1.0:  # Only after 1 second
+                self._publish_status('IN_PROGRESS', f'{elapsed:.1f}s elapsed')
+        except Exception as e:
+            self.get_logger().debug(f'Feedback error: {e}')
+
+    def goal_response_callback(self, future):
+        """Handle goal acceptance/rejection"""
+        try:
+            goal_handle = future.result()
+        except Exception as e:
+            self.get_logger().error(f'✗ Failed to send goal: {e}')
+            self._publish_status('FAILED', f'Could not send goal: {str(e)[:50]}')
+            return
+
+        if not goal_handle or not goal_handle.accepted:
+            self.get_logger().warning('✗ Goal rejected by nav2')
+            self._publish_status('REJECTED', 'Nav2 rejected the goal')
+            self.current_goal_handle = None
+            return
+        
+        self.current_goal_handle = goal_handle
+        self.get_logger().info('✓ Goal accepted by nav2')
+        self._publish_status('ACCEPTED', 'Goal accepted, navigation started')
+        
+        # Wait for result
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(self.get_result_callback)
+
+    def get_result_callback(self, future):
+        """Handle navigation result"""
+        try:
+            result = future.result()
+            elapsed = time.time() - self.goal_start_time
+            
+            if result and result.result:
+                # Check the status code
+                status = getattr(result.result, 'status', None)
+                
+                self.get_logger().info(
+                    f'✓ Navigation completed in {elapsed:.1f}s with status={status}'
+                )
+                self._publish_status('COMPLETED', f'Goal reached in {elapsed:.1f}s')
+            else:
+                # Check wrapped_result status
+                status_code = getattr(result, 'status', None)
+                self.get_logger().info(f'Result status code: {status_code}')
+                
+                # action_msgs/msg/GoalStatus: 4=succeeded, 5=canceled, 6=aborted
+                if status_code == 4:
+                    self.get_logger().info(f'✓ Navigation succeeded in {elapsed:.1f}s')
+                    self._publish_status('COMPLETED', f'Goal reached in {elapsed:.1f}s')
+                elif status_code == 5:
+                    self.get_logger().warning(f'Goal cancelled after {elapsed:.1f}s')
+                    self._publish_status('CANCELLED', f'Goal cancelled after {elapsed:.1f}s')
+                else:
+                    self.get_logger().error(f'Goal failed with status {status_code}')
+                    self._publish_status('FAILED', f'Navigation failed (status {status_code})')
+                    
+        except Exception as e:
+            elapsed = time.time() - self.goal_start_time
+            self.get_logger().error(f'✗ Navigation failed after {elapsed:.1f}s: {e}')
+            self._publish_status('FAILED', f'Exception: {str(e)[:50]}')
+        finally:
+            self.current_goal_handle = None
+
+def main(args=None):
+    # Read robot ID and domain from environment or args
+    robot_id = os.getenv('ROBOT_ID', 'robot_11')
+    robot_domain = int(os.getenv('ROS_DOMAIN_ID', '3'))
+    goal_topic = os.getenv('FORWARDER_GOAL_TOPIC', '/goal_request')
+    status_topic = os.getenv('FORWARDER_STATUS_TOPIC', '/navigation_status')
+    
+    rclpy.init(args=args)
+    
+    forwarder = RobotActionForwarder(
+        robot_id=robot_id,
+        robot_domain=robot_domain,
+        goal_topic=goal_topic,
+        status_topic=status_topic
+    )
+    
+    executor = MultiThreadedExecutor()
+    executor.add_node(forwarder)
+    
+    forwarder.get_logger().info(
+        f'\n{"="*70}\n'
+        f'🚀 Robot Action Forwarder Started\n'
+        f'  Robot: {robot_id} | Domain: {robot_domain}\n'
+        f'  Waiting for goals on {goal_topic} topic...\n'
+        f'{"="*70}\n'
+    )
+    
+    try:
+        executor.spin()
+    except KeyboardInterrupt:
+        forwarder.get_logger().info('\n⛔ Shutting down...')
+    finally:
+        executor.shutdown()
+        rclpy.shutdown()
+        forwarder.get_logger().info('✓ Shutdown complete')
+
+
+if __name__ == '__main__':
+    main()

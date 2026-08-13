@@ -22,6 +22,10 @@ class RosModules:
     rclpy: Any
     Node: Any
     MultiThreadedExecutor: Any
+    ReentrantCallbackGroup: Any
+    QoSProfile: Any
+    ReliabilityPolicy: Any
+    HistoryPolicy: Any
     Twist: Any
     PoseStamped: Any
     PoseWithCovarianceStamped: Any
@@ -31,6 +35,7 @@ class RosModules:
     BatteryState: Any
     Bool: Any
     String: Any
+    Float32: Any
 
 
 _modules: Optional[RosModules] = None
@@ -45,12 +50,14 @@ def load_ros() -> Optional[RosModules]:
 
     try:
         import rclpy
+        from rclpy.callback_groups import ReentrantCallbackGroup
         from rclpy.executors import MultiThreadedExecutor
         from rclpy.node import Node
+        from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
         from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
         from nav_msgs.msg import OccupancyGrid, Odometry
         from sensor_msgs.msg import BatteryState, LaserScan
-        from std_msgs.msg import Bool, String
+        from std_msgs.msg import Bool, Float32, String
     except Exception as exc:  # pragma: no cover - depends on host
         _import_error = str(exc)
         logger.warning("ROS 2 runtime unavailable: %s", exc)
@@ -60,6 +67,10 @@ def load_ros() -> Optional[RosModules]:
         rclpy=rclpy,
         Node=Node,
         MultiThreadedExecutor=MultiThreadedExecutor,
+        ReentrantCallbackGroup=ReentrantCallbackGroup,
+        QoSProfile=QoSProfile,
+        ReliabilityPolicy=ReliabilityPolicy,
+        HistoryPolicy=HistoryPolicy,
         Twist=Twist,
         PoseStamped=PoseStamped,
         PoseWithCovarianceStamped=PoseWithCovarianceStamped,
@@ -69,6 +80,7 @@ def load_ros() -> Optional[RosModules]:
         BatteryState=BatteryState,
         Bool=Bool,
         String=String,
+        Float32=Float32,
     )
     return _modules
 
@@ -80,6 +92,15 @@ def ros_available() -> bool:
 def ros_error() -> Optional[str]:
     load_ros()
     return _import_error
+
+
+def sensor_qos(ros: RosModules, depth: int = 1) -> Any:
+    """Best-effort, keep-last QoS for high-rate sensor topics."""
+    return ros.QoSProfile(
+        depth=depth,
+        reliability=ros.ReliabilityPolicy.BEST_EFFORT,
+        history=ros.HistoryPolicy.KEEP_LAST,
+    )
 
 
 def yaw_to_quaternion(theta: float) -> tuple[float, float]:
