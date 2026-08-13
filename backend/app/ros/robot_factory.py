@@ -13,7 +13,7 @@ from app.core.logging_config import get_logger
 from app.ros.capabilities import CAPABILITY_REGISTRY
 from app.ros.common_controller import build_base_controller_class
 from app.ros.runtime import RosModules
-from app.ros.topics_registry import DEFAULT_ROBOT_TYPE, capabilities_for, type_spec
+from app.ros.topics_registry import DEFAULT_ROBOT_TYPE, capabilities_for, is_known_type
 
 logger = get_logger(__name__)
 

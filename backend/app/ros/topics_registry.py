@@ -225,3 +225,7 @@ def server_topic(robot_type: str, robot_id: str, logical: str) -> str:
 
 def has_topic(robot_type: str, logical: str) -> bool:
     return logical in type_spec(robot_type)["topics"]
+
+
+def is_known_type(robot_type: str) -> bool:
+    return robot_type in ROBOT_TYPE_REGISTRY
