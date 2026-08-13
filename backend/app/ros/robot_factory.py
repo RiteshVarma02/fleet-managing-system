@@ -33,12 +33,8 @@ class RobotFactory:
         if self._base is None:
             raise RuntimeError("RobotFactory.bind() must be called after rclpy init")
 
-        # Unknown type falls back to the default rather than failing a connect.
-        if robot_type not in type_spec(robot_type)["capabilities"] and robot_type not in (
-            self._classes
-        ):
-            pass
-        resolved_type = robot_type if type_spec(robot_type) is not None else DEFAULT_ROBOT_TYPE
+        # An unknown type falls back to the default rather than failing connect.
+        resolved_type = robot_type if is_known_type(robot_type) else DEFAULT_ROBOT_TYPE
 
         with self._lock:
             cached = self._classes.get(resolved_type)
