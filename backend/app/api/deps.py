@@ -1,31 +1,52 @@
-"""Shared FastAPI dependencies: DB session and authenticated principal."""
+"""Shared FastAPI dependencies: database handle and authenticated principal."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional
 
-from fastapi import Depends, Request
+from fastapi import Depends, Request, WebSocket
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy.orm import Session
+from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.core.exceptions import AuthError, ForbiddenError
 from app.core.security import decode_access_token
-from app.db.session import get_db
+from app.db.documents import Role
+from app.db.mongo import get_database
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
-DbSession = Depends(get_db)
+
+def get_db() -> AsyncIOMotorDatabase:
+    """One pooled Motor client per process — nothing to open or close per call."""
+    return get_database()
 
 
 @dataclass(frozen=True)
 class Principal:
     username: str
     role: str
+    user_id: Optional[str] = None
 
     @property
     def is_admin(self) -> bool:
-        return self.role == "admin"
+        return self.role == Role.admin.value
+
+    @property
+    def can_command(self) -> bool:
+        return self.role in {Role.admin.value, Role.operator.value}
+
+
+def _principal_from_token(token: str) -> Principal:
+    payload = decode_access_token(token)
+    username = payload.get("sub")
+    if not username:
+        raise AuthError("Invalid token payload")
+    return Principal(
+        username=username,
+        role=str(payload.get("role") or Role.operator.value),
+        user_id=payload.get("uid"),
+    )
 
 
 def get_current_user(
@@ -33,11 +54,7 @@ def get_current_user(
 ) -> Principal:
     if credentials is None or not credentials.credentials:
         raise AuthError("Missing bearer token")
-    payload = decode_access_token(credentials.credentials)
-    username = payload.get("sub")
-    if not username:
-        raise AuthError("Invalid token payload")
-    return Principal(username=username, role=payload.get("role", "operator"))
+    return _principal_from_token(credentials.credentials)
 
 
 def require_admin(user: Principal = Depends(get_current_user)) -> Principal:
@@ -46,8 +63,24 @@ def require_admin(user: Principal = Depends(get_current_user)) -> Principal:
     return user
 
 
-def get_db_session(db: Session = Depends(get_db)) -> Session:
-    return db
+def require_operator(user: Principal = Depends(get_current_user)) -> Principal:
+    """Admins and operators may command robots; viewers are read-only."""
+    if not user.can_command:
+        raise ForbiddenError("Operator privileges required")
+    return user
+
+
+def principal_from_websocket(websocket: WebSocket) -> Optional[Principal]:
+    """Browsers cannot set headers on a WebSocket — accept `?token=` too."""
+    header = websocket.headers.get("authorization", "")
+    token = header[7:].strip() if header.lower().startswith("bearer ") else ""
+    token = token or (websocket.query_params.get("token") or "")
+    if not token:
+        return None
+    try:
+        return _principal_from_token(token)
+    except AuthError:
+        return None
 
 
 def client_ip(request: Request) -> str:
