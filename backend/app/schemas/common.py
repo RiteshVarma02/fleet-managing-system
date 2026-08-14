@@ -4,13 +4,9 @@ from __future__ import annotations
 
 from typing import Generic, Optional, TypeVar
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
 
 T = TypeVar("T")
-
-
-class ORMModel(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
 
 
 class StatusResponse(BaseModel):

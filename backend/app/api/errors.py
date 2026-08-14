@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from sqlalchemy.exc import SQLAlchemyError
+from pymongo.errors import PyMongoError
 
 from app.core.exceptions import AppError
 from app.core.logging_config import get_logger
@@ -25,16 +25,27 @@ def install_exception_handlers(app: FastAPI) -> None:
     async def _validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
         return JSONResponse(
             status_code=422,
-            content={"status": "error", "code": "validation_error", "message": "Invalid request",
-                     "details": exc.errors()},
+            content={
+                "status": "error",
+                "code": "validation_error",
+                "message": "Invalid request",
+                "details": [
+                    {"loc": list(err.get("loc", [])), "msg": err.get("msg")}
+                    for err in exc.errors()
+                ],
+            },
         )
 
-    @app.exception_handler(SQLAlchemyError)
-    async def _db_error(_: Request, exc: SQLAlchemyError) -> JSONResponse:
+    @app.exception_handler(PyMongoError)
+    async def _db_error(_: Request, exc: PyMongoError) -> JSONResponse:
         logger.exception("Database error: %s", exc)
         return JSONResponse(
             status_code=503,
-            content={"status": "error", "code": "database_error", "message": "Database unavailable"},
+            content={
+                "status": "error",
+                "code": "database_error",
+                "message": "Database unavailable",
+            },
         )
 
     @app.exception_handler(Exception)
@@ -42,5 +53,9 @@ def install_exception_handlers(app: FastAPI) -> None:
         logger.exception("Unhandled error: %s", exc)
         return JSONResponse(
             status_code=500,
-            content={"status": "error", "code": "internal_error", "message": "Internal server error"},
+            content={
+                "status": "error",
+                "code": "internal_error",
+                "message": "Internal server error",
+            },
         )
