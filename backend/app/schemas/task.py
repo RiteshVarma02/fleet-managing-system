@@ -62,6 +62,18 @@ class TaskCreate(BaseModel):
     payload: Optional[Dict[str, Any]] = None
 
 
+class TaskUpdate(BaseModel):
+    status: TaskStatus
+    message: Optional[str] = Field(default=None, max_length=500)
+
+
+class PickDropStart(BaseModel):
+    robot_id: str = Field(min_length=1, max_length=64)
+    pickup_location_id: str = Field(min_length=1)
+    drop_location_id: str = Field(min_length=1)
+    repeats: int = Field(default=1, ge=1, le=1000)
+
+
 class TaskOut(BaseModel):
     id: str
     type: str

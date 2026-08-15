@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import text
 
 from app.api.deps import Principal, get_current_user
 from app.core.config import settings
-from app.db.session import engine
+from app.db.mongo import connect_and_verify
 from app.ros.manager import ros_manager
 from app.ros.runtime import ros_error
 from app.schemas.common import DataResponse
@@ -23,11 +22,10 @@ def health() -> dict:
 
 
 @router.get("/ready")
-def ready() -> dict:
+async def ready() -> dict:
     """Readiness probe — verifies the database is reachable."""
     try:
-        with engine.connect() as connection:
-            connection.execute(text("SELECT 1"))
+        await connect_and_verify()
         db_ok = True
     except Exception:
         db_ok = False

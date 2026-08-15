@@ -16,13 +16,12 @@ from app.api.errors import install_exception_handlers
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.logging_config import configure_logging, get_logger
-from app.db.repositories import robots as robot_repo
-from app.db.session import init_db, session_scope
+from app.db.documents import RobotStatus
+from app.db.mongo import close_client, connect_and_verify, ensure_indexes
+from app.db.repositories import robots_repo
 from app.middleware import RequestContextMiddleware
 from app.ros.manager import ros_manager
-from app.services import robot_service
 from app.services.map_service import map_service
-from app.services.task_service import task_runner
 from app.startup import seed_initial_data
 
 logger = get_logger(__name__)
@@ -33,19 +32,25 @@ async def lifespan(_: FastAPI):
     configure_logging()
     logger.info("Starting %s (%s)", settings.app_name, settings.environment)
 
-    if settings.auto_create_tables:
-        init_db()
-    with session_scope() as db:
-        seed_initial_data(db)
-        robot_repo.mark_all_offline(db)
+    db = await connect_and_verify()
+    await ensure_indexes()
+    await seed_initial_data(db)
+    await robots_repo.mark_all_offline(db)
 
     if ros_manager.start():
         ros_manager.start_registration_listener(
             on_approved=lambda robot_id: ros_manager.start_controller(robot_id)
         )
         if settings.autostart_robot_controllers:
-            with session_scope() as db:
-                robot_service.autostart_controllers(db)
+            for robot in await robots_repo.list_all(db, approved_only=True):
+                robot_id = str(robot.get("robot_id") or "")
+                if not robot_id:
+                    continue
+                started, message = ros_manager.start_controller(robot_id)
+                if started:
+                    await robots_repo.set_status(db, robot_id, RobotStatus.online)
+                else:
+                    logger.warning("Controller not started for %s: %s", robot_id, message)
     else:
         logger.warning("Running without ROS 2 — robot control endpoints will return 503")
 
@@ -53,11 +58,12 @@ async def lifespan(_: FastAPI):
         yield
     finally:
         logger.info("Shutting down")
-        task_runner.stop_all()
         map_service.shutdown()
         ros_manager.shutdown()
-        with session_scope() as db:
-            robot_repo.mark_all_offline(db)
+        try:
+            await robots_repo.mark_all_offline(db)
+        finally:
+            await close_client()
 
 
 def create_app() -> FastAPI:

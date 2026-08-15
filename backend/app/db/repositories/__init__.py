@@ -1,6 +1,6 @@
-"""MongoDB repositories — the only layer that talks to the database."""
+"""MongoDB repositories - the only layer that talks to the database."""
 
-from app.db.repositories import (  # noqa: F401
+from app.db.repositories import (
     locations_repo,
     maps_repo,
     pending_requests_repo,
@@ -10,6 +10,15 @@ from app.db.repositories import (  # noqa: F401
     users_repo,
 )
 
+# Backward-compatible aliases used across endpoints/services
+locations = locations_repo
+maps = maps_repo
+pending_requests = pending_requests_repo
+robot_registrations = robot_registrations_repo
+robots = robots_repo
+tasks = tasks_repo
+users = users_repo
+
 __all__ = [
     "locations_repo",
     "maps_repo",
@@ -18,4 +27,11 @@ __all__ = [
     "robots_repo",
     "tasks_repo",
     "users_repo",
+    "locations",
+    "maps",
+    "pending_requests",
+    "robot_registrations",
+    "robots",
+    "tasks",
+    "users",
 ]

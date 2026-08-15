@@ -5,12 +5,11 @@ from __future__ import annotations
 from typing import List
 
 from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
+from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from app.api.deps import Principal, get_current_user
+from app.api.deps import Principal, get_current_user, get_db
 from app.core.exceptions import ConflictError, NotFoundError
-from app.db.repositories import locations as location_repo
-from app.db.session import get_db
+from app.db.repositories import locations_repo as location_repo
 from app.schemas.common import DataResponse, StatusResponse
 from app.schemas.task import LocationCreate, LocationOut
 
@@ -18,26 +17,38 @@ router = APIRouter(prefix="/locations", tags=["locations"])
 
 
 @router.get("", response_model=DataResponse[List[LocationOut]])
-def list_locations(map_name: str | None = None, db: Session = Depends(get_db),
-                   _: Principal = Depends(get_current_user)):
-    rows = location_repo.list_locations(db, map_name)
-    return DataResponse(data=[LocationOut.model_validate(row) for row in rows])
+async def list_locations(
+    map_name: str | None = None,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    _: Principal = Depends(get_current_user),
+):
+    rows = await location_repo.list_all(db, map_name=map_name)
+    return DataResponse(data=[LocationOut.from_document(row) for row in rows])
 
 
 @router.post("", response_model=DataResponse[LocationOut], status_code=201)
-def create_location(body: LocationCreate, db: Session = Depends(get_db),
-                    _: Principal = Depends(get_current_user)):
-    if location_repo.get_location_by_name(db, body.name, body.map_name):
+async def create_location(
+    body: LocationCreate,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    _: Principal = Depends(get_current_user),
+):
+    existing = await location_repo.list_all(db, map_name=body.map_name)
+    if any(str(item.get("name")).strip().lower() == body.name.strip().lower() for item in existing):
         raise ConflictError(f"Location '{body.name}' already exists on this map")
-    location = location_repo.create_location(
+    location = await location_repo.create(
         db, name=body.name, x=body.x, y=body.y, theta=body.theta, map_name=body.map_name
     )
-    return DataResponse(data=LocationOut.model_validate(location))
+    if location is None:
+        raise ConflictError(f"Location '{body.name}' already exists on this map")
+    return DataResponse(data=LocationOut.from_document(location))
 
 
 @router.delete("/{location_id}", response_model=StatusResponse)
-def delete_location(location_id: str, db: Session = Depends(get_db),
-                    _: Principal = Depends(get_current_user)):
-    if not location_repo.delete_location(db, location_id):
+async def delete_location(
+    location_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    _: Principal = Depends(get_current_user),
+):
+    if not await location_repo.delete(db, location_id):
         raise NotFoundError(f"Location '{location_id}' not found")
     return StatusResponse(message="Location deleted")

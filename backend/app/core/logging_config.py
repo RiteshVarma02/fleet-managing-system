@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import logging
 import sys
+from contextvars import ContextVar
 from logging.config import dictConfig
 
 from app.core.config import settings
 
 _CONFIGURED = False
+request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
 
 
 def configure_logging() -> None:

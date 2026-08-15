@@ -2,33 +2,41 @@
 
 from __future__ import annotations
 
-import os
-
-from sqlalchemy.orm import Session
-
 from app.core.config import settings
 from app.core.logging_config import get_logger
-from app.db.repositories import users as user_repo
+from app.core.security import hash_password
+from app.db.documents import Role
+from app.db.repositories import users_repo as user_repo
 
 logger = get_logger(__name__)
 
 
-def seed_initial_data(db: Session) -> None:
+async def seed_initial_data(db) -> None:
     """Create the bootstrap admin if no user exists.
 
-    The password comes from `ADMIN_PASSWORD`. In production a missing value is
-    fatal rather than silently defaulting to a well-known password.
+    Uses `BOOTSTRAP_ADMIN_*` settings from config.
     """
-    username = os.getenv("ADMIN_USERNAME", "admin")
-    if user_repo.get_by_username(db, username) is not None:
+    username = settings.bootstrap_admin_username.strip().lower()
+    if await user_repo.get_by_username(db, username) is not None:
         return
 
-    password = os.getenv("ADMIN_PASSWORD")
+    password = settings.bootstrap_admin_password
     if not password:
         if settings.is_production:
-            raise RuntimeError("ADMIN_PASSWORD must be set in production to seed the admin user")
+            raise RuntimeError(
+                "BOOTSTRAP_ADMIN_PASSWORD must be set in production to seed the admin user"
+            )
         password = "admin123"
         logger.warning("Seeding admin user with the development default password")
 
-    user_repo.ensure_user(db, username=username, password=password, role="admin")
+    created = await user_repo.create(
+        db,
+        username=username,
+        password_hash=hash_password(password),
+        role=Role.admin,
+    )
+    if created is None:
+        logger.info("Bootstrap admin user '%s' already exists", username)
+        return
+
     logger.info("Bootstrap admin user '%s' created", username)
