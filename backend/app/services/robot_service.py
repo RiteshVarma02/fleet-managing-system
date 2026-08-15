@@ -1,187 +1,102 @@
-"""Robot connect/disconnect, telemetry and registration orchestration."""
+"""Robot-facing business logic shared by HTTP endpoints and the scheduler.
+
+The endpoints stay thin: everything that needs both Mongo *and* the ROS runtime
+lives here, so there is exactly one definition of "connect a robot" and one
+definition of "what does this robot look like right now".
+"""
 
 from __future__ import annotations
 
-import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy.orm import Session
-
-from app.core.exceptions import ConflictError, NotFoundError, RobotNotConnectedError, ValidationError
+from app.core.exceptions import NotFoundError, RobotNotConnectedError
 from app.core.logging_config import get_logger
-from app.db.models import Robot, RobotStatusEnum
-from app.db.repositories import robots as robot_repo
+from app.db.documents import RobotStatus
+from app.db.repositories import robots_repo
 from app.ros.manager import ros_manager
+from app.ros.topics_registry import DEFAULT_ROBOT_TYPE, capabilities_for
+from app.services.telemetry_bus import telemetry_bus
 
 logger = get_logger(__name__)
 
-_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+async def get_robot(db, robot_id: str) -> Dict[str, Any]:
+    robot = await robots_repo.get(db, robot_id)
+    if robot is None:
+        raise NotFoundError(f"Robot '{robot_id}' not found")
+    return robot
 
 
-def slugify_robot_id(name: str) -> str:
-    slug = _SLUG_RE.sub("_", name.strip().lower()).strip("_")
-    return slug or "robot"
+def robot_type_of(robot: Dict[str, Any]) -> str:
+    return str(robot.get("robot_type") or DEFAULT_ROBOT_TYPE)
 
 
-def connect(db: Session, robot_id: str) -> Tuple[Robot, str]:
-    if ros_manager.get_controller(robot_id) is None:
-        ok, message = ros_manager.start_controller(robot_id)
-        if not ok:
-            robot_repo.upsert_robot(db, robot_id=robot_id, status=RobotStatusEnum.error)
-            raise ConflictError(message, code="controller_start_failed")
-    else:
-        message = "Already connected"
-
-    robot = robot_repo.upsert_robot(
-        db,
-        robot_id=robot_id,
-        name=robot_id,
-        status=RobotStatusEnum.online,
-    )
-    return robot, message
-
-
-def disconnect(db: Session, robot_id: str) -> Tuple[Robot, str]:
-    _, message = ros_manager.stop_controller(robot_id)
-    robot = robot_repo.upsert_robot(db, robot_id=robot_id, status=RobotStatusEnum.offline)
-    return robot, message
-
-
-def require_controller(robot_id: str) -> Any:
+def require_controller(robot_id: str, capability: Optional[str] = None):
     controller = ros_manager.get_controller(robot_id)
     if controller is None:
-        raise RobotNotConnectedError(robot_id)
+        raise RobotNotConnectedError(f"Robot '{robot_id}' is not connected")
+    if capability and not controller.has_capability(capability):
+        raise NotFoundError(
+            f"Robot '{robot_id}' does not support the '{capability}' capability"
+        )
     return controller
 
 
-def move(robot_id: str, linear: float, angular: float) -> None:
-    require_controller(robot_id).move(linear, angular)
+async def connect(db, robot_id: str) -> Tuple[bool, str, Dict[str, Any]]:
+    """Start the controller (and its domain bridge) using the stored identity."""
+    robot = await get_robot(db, robot_id)
+    ok, message = ros_manager.start_controller(
+        robot_id, robot_type_of(robot), robot.get("ros_domain_id")
+    )
+    robot = await robots_repo.upsert(
+        db, robot_id, status=RobotStatus.online if ok else RobotStatus.error
+    )
+    return ok, message, robot
 
 
-def emergency_stop(robot_id: str) -> None:
-    ros_manager.publish_emergency(robot_id, True)
+async def disconnect(db, robot_id: str) -> Dict[str, Any]:
+    ros_manager.stop_controller(robot_id)
+    telemetry_bus.forget(robot_id)
+    return await robots_repo.upsert(db, robot_id, status=RobotStatus.offline)
 
 
-def emergency_stop_all() -> int:
-    robot_ids = ros_manager.connected_robot_ids()
-    for robot_id in robot_ids:
-        try:
-            ros_manager.publish_emergency(robot_id, True)
-        except Exception as exc:  # pragma: no cover - keep stopping the rest
-            logger.error("Emergency publish failed for %s: %s", robot_id, exc)
-    return len(robot_ids)
+def live_snapshot(robot_id: str) -> Optional[Dict[str, Any]]:
+    """Controller snapshot when attached, else the last telemetry-bus frame.
 
-
-def get_status(db: Session, robot_id: str) -> Dict[str, Any]:
-    """Live telemetry when connected, last known DB state otherwise."""
+    Reading the bus instead of Mongo keeps per-request cost at zero I/O for the
+    hot path (fleet list, operator console polling).
+    """
     controller = ros_manager.get_controller(robot_id)
     if controller is not None:
-        snapshot = controller.snapshot()
-        robot_repo.upsert_robot(
-            db,
-            robot_id=robot_id,
-            status=RobotStatusEnum.online,
-            x=snapshot["position"]["x"],
-            y=snapshot["position"]["y"],
-            theta=snapshot["position"]["theta"],
-            battery=snapshot["battery"],
-        )
-        return {
-            "connected": True,
-            "position": snapshot["position"],
-            "velocity": snapshot["velocity"],
-            "battery": snapshot["battery"],
-            "nav": snapshot["nav"],
-        }
+        return controller.snapshot()
+    return telemetry_bus.snapshot(robot_id)
 
-    robot = robot_repo.get_robot(db, robot_id)
-    if robot is None:
-        raise NotFoundError(f"Robot '{robot_id}' not found")
+
+def view(robot: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge the stored document with live state — no database round trip."""
+    robot_id = str(robot.get("robot_id") or "")
     return {
-        "connected": False,
-        "position": {"x": robot.x, "y": robot.y, "theta": robot.theta},
-        "velocity": {"linear": 0.0, "angular": 0.0},
-        "battery": float(robot.battery),
-        "nav": None,
+        "document": robot,
+        "connected": ros_manager.get_controller(robot_id) is not None,
+        "live": live_snapshot(robot_id),
+        "capabilities": capabilities_for(robot_type_of(robot)),
     }
 
 
-def list_robots(db: Session) -> List[Robot]:
-    return robot_repo.list_robots(db)
+async def fleet_view(db, *, approved_only: bool = False) -> List[Dict[str, Any]]:
+    rows = await robots_repo.list_all(db, approved_only=approved_only)
+    return [view(row) for row in rows]
 
 
-def delete_robot(db: Session, robot_id: str) -> None:
-    """Soft delete: history keeps referencing the robot."""
-    ros_manager.stop_controller(robot_id)
-    if not robot_repo.soft_delete_robot(db, robot_id):
-        raise NotFoundError(f"Robot '{robot_id}' not found")
-
-
-# --------------------------------------------------------------------------
-# Registration workflow
-# --------------------------------------------------------------------------
-def register(db: Session, mac_address: str, hostname: Optional[str], ip_address: Optional[str]) -> Dict[str, Any]:
-    robot = robot_repo.get_robot_by_mac(db, mac_address)
-    if robot and robot.approved and not robot.is_deleted:
-        robot_repo.upsert_robot(db, robot_id=robot.id, hostname=hostname, ip_address=ip_address)
-        return {
-            "status": "approved",
-            "robot_id": robot.id,
-            "namespace": f"/{robot.id}",
-            "message": f"Welcome back! Registered as {robot.id}",
-        }
-
-    robot_repo.upsert_pending_registration(db, mac_address, hostname, ip_address)
-    return {
-        "status": "pending",
-        "message": f"Registration submitted for MAC {mac_address}. Awaiting operator approval.",
-    }
-
-
-def approve(db: Session, mac_address: str, custom_name: str, robot_id: Optional[str] = None) -> Dict[str, Any]:
-    custom_name = custom_name.strip()
-    if not custom_name:
-        raise ValidationError("custom_name is required")
-
-    resolved_id = (robot_id or slugify_robot_id(custom_name)).strip()
-    existing = robot_repo.get_robot(db, resolved_id, include_deleted=True)
-    if existing and existing.mac_address and existing.mac_address != mac_address:
-        raise ConflictError(f"Robot id '{resolved_id}' is already used by another robot")
-
-    robot = robot_repo.approve_pending_registration(db, mac_address, resolved_id, custom_name)
-    if robot is None:
-        raise NotFoundError("Pending registration not found")
-
-    started, message = ros_manager.start_controller(robot.id)
-    if started:
-        robot_repo.upsert_robot(db, robot_id=robot.id, status=RobotStatusEnum.online)
-    else:
-        logger.warning("Controller not started for %s: %s", robot.id, message)
-
-    return {
-        "robot_id": robot.id,
-        "name": robot.name,
-        "namespace": f"/{robot.id}",
-        "controller_started": started,
-        "message": f"Robot approved as {robot.name} ({robot.id})",
-    }
-
-
-def reject(db: Session, mac_address: str) -> None:
-    if robot_repo.reject_pending_registration(db, mac_address) is None:
-        raise NotFoundError("Pending registration not found")
-
-
-def autostart_controllers(db: Session) -> None:
-    """Bring up a controller for every known robot at boot."""
-    robots = robot_repo.list_robots(db)
-    logger.info("Starting controllers for %d robot(s)", len(robots))
-    for robot in robots:
-        ok, message = ros_manager.start_controller(robot.id)
-        status = RobotStatusEnum.online if ok else RobotStatusEnum.offline
-        if not ok:
-            logger.warning("Controller not started for %s: %s", robot.id, message)
-        try:
-            robot_repo.upsert_robot(db, robot_id=robot.id, status=status, touch_last_seen=ok)
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.warning("Status update failed for %s: %s", robot.id, exc)
+async def idle_robot_ids(db, *, robot_type: Optional[str] = None) -> List[str]:
+    """Connected, approved, task-free robots — candidates for the scheduler."""
+    connected = set(ros_manager.connected_robot_ids())
+    candidates: List[str] = []
+    for robot in await robots_repo.list_all(db, approved_only=True):
+        robot_id = str(robot.get("robot_id") or "")
+        if robot_id not in connected or robot.get("active_task_id"):
+            continue
+        if robot_type and robot_type_of(robot) != robot_type:
+            continue
+        candidates.append(robot_id)
+    return candidates

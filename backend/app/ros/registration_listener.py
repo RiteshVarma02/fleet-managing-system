@@ -1,21 +1,26 @@
-"""Listener for `/robot/register` announcements from field robots."""
+"""Listener for `/robot/register` announcements from field robots.
+
+This node performs no I/O of its own: it validates the payload and delegates to
+an injected `handle(mac, hostname, ip) -> dict` callable (see
+`services.registration_service`), which owns the database work. That keeps
+`rclpy` threads free of Mongo calls and keeps this file testable without a DB.
+"""
 
 from __future__ import annotations
 
 import json
 import re
-from typing import Callable, Optional
+from typing import Any, Callable, Dict, Optional
 
 from app.core.config import settings
 from app.core.logging_config import get_logger
-from app.db.models import RobotStatusEnum
-from app.db.repositories import robots as robot_repo
-from app.db.session import session_scope
 from app.ros.runtime import RosModules
 
 logger = get_logger(__name__)
 
 MAC_RE = re.compile(r"^([0-9A-F]{2}[:-]){5}[0-9A-F]{2}$")
+
+RegistrationHandler = Callable[[str, Optional[str], Optional[str]], Dict[str, Any]]
 
 
 def build_registration_listener_class(ros: RosModules):
@@ -26,28 +31,30 @@ def build_registration_listener_class(ros: RosModules):
              "ip_address": "192.168.1.50"}
 
         Approved MACs are auto-reconnected; unknown ones become pending
-        registrations that an operator approves in the Robots panel.
+        registrations an administrator approves in the fleet dashboard.
         """
 
-        def __init__(self, on_approved: Optional[Callable[[str], None]] = None) -> None:
+        def __init__(self, handle: RegistrationHandler) -> None:
             super().__init__("registration_listener")
-            self._on_approved = on_approved
+            self._handle = handle
             self.create_subscription(ros.String, settings.registration_topic, self._on_message, 10)
             self._response_pub = self.create_publisher(
                 ros.String, settings.registration_response_topic, 10
             )
             logger.info("Registration listener active on %s", settings.registration_topic)
 
-        def _respond(self, payload: dict) -> None:
+        def _respond(self, payload: Dict[str, Any]) -> None:
             msg = ros.String()
-            msg.data = json.dumps(payload)
+            msg.data = json.dumps(payload, default=str)
             self._response_pub.publish(msg)
 
-        def _on_message(self, msg) -> None:
+        def _on_message(self, msg: Any) -> None:
             try:
-                data = json.loads(msg.data)
+                data = json.loads(getattr(msg, "data", "") or "")
             except (json.JSONDecodeError, TypeError):
                 logger.error("Invalid JSON on %s: %r", settings.registration_topic, msg.data)
+                return
+            if not isinstance(data, dict):
                 return
 
             mac = str(data.get("mac_address", "")).strip().upper()
@@ -60,43 +67,10 @@ def build_registration_listener_class(ros: RosModules):
             logger.info("Registration request MAC=%s host=%s ip=%s", mac, hostname, ip_address)
 
             try:
-                with session_scope() as db:
-                    robot = robot_repo.get_robot_by_mac(db, mac)
-                    if robot and robot.approved and not robot.is_deleted:
-                        robot_repo.upsert_robot(
-                            db,
-                            robot_id=robot.id,
-                            hostname=hostname,
-                            ip_address=ip_address,
-                            status=RobotStatusEnum.online,
-                        )
-                        robot_id = robot.id
-                    else:
-                        robot_repo.upsert_pending_registration(db, mac, hostname, ip_address)
-                        robot_id = None
+                result = self._handle(mac, hostname, ip_address)
             except Exception as exc:  # pragma: no cover - defensive
                 logger.exception("Registration handling failed for %s: %s", mac, exc)
                 return
-
-            if robot_id:
-                self._respond(
-                    {
-                        "status": "approved",
-                        "robot_id": robot_id,
-                        "message": f"Welcome back! Registered as {robot_id}",
-                    }
-                )
-                if self._on_approved:
-                    try:
-                        self._on_approved(robot_id)
-                    except Exception as exc:  # pragma: no cover - defensive
-                        logger.warning("Could not start controller for %s: %s", robot_id, exc)
-            else:
-                self._respond(
-                    {
-                        "status": "pending",
-                        "message": f"Registration submitted for MAC {mac}. Awaiting operator approval.",
-                    }
-                )
+            self._respond(result)
 
     return RegistrationListener
