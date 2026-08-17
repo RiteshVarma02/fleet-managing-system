@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.db.mongo import connect_and_verify
 from app.ros.manager import ros_manager
 from app.ros.runtime import ros_error
+from app.ros.topics_registry import robot_types
 from app.schemas.common import DataResponse
 from app.services.map_service import map_service
 
@@ -40,7 +41,12 @@ def system_info(_: Principal = Depends(get_current_user)):
             "ros_enabled": settings.ros_enabled,
             "ros_available": ros_manager.available,
             "ros_error": ros_error(),
+            "ros_domain_id": settings.ros_domain_id,
             "connected_robots": ros_manager.connected_robot_ids(),
+            "robot_types": robot_types(),
             "slam_running": map_service.slam_running(),
+            "domain_bridge_enabled": settings.domain_bridge_enabled,
+            "bridges": ros_manager.bridge_status(),
+            "telemetry_ws_interval_seconds": settings.telemetry_ws_interval_seconds,
         }
     )

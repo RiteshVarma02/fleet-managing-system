@@ -28,6 +28,16 @@ export interface Velocity {
 
 export type RobotStatus = "online" | "offline" | "error" | "busy" | string;
 
+/** Logical robot capabilities declared by `app/ros/topics_registry.py`. */
+export type Capability =
+  | "movement"
+  | "navigation"
+  | "telemetry"
+  | "emergency"
+  | "docking"
+  | "fork_control"
+  | "arm_control";
+
 export interface Robot {
   id: string;
   name: string;
@@ -35,25 +45,76 @@ export interface Robot {
   status: RobotStatus;
   battery: number;
   position: Position;
+  capabilities: Capability[] | string[];
   mac_address: string | null;
   hostname: string | null;
   ip_address: string | null;
+  ros_domain_id: number | null;
   approved: boolean;
+  connected: boolean;
+  active_task_id: string | null;
   last_seen_at: string | null;
 }
 
+export interface NavStatus {
+  state?: string;
+  distance_remaining?: number;
+  goal?: Position | null;
+  message?: string | null;
+}
+
 export interface RobotTelemetry {
+  robot_id?: string;
   connected: boolean;
   position: Position;
   velocity: Velocity;
   battery: number;
-  nav: unknown;
+  nav: NavStatus | null;
+  dock_state?: string | null;
+  fork_height?: number | null;
+  arm_state?: string | null;
+  emergency_active?: boolean;
+  capabilities?: string[];
+}
+
+/** One entry of a `/telemetry/ws` frame. */
+export interface TelemetrySample {
+  robot_id: string;
+  status?: RobotStatus;
+  position?: Position;
+  velocity?: Velocity;
+  battery?: number;
+  nav?: NavStatus | null;
+  dock_state?: string | null;
+  fork_height?: number | null;
+  arm_state?: string | null;
+  emergency_active?: boolean;
+  updated_at?: string;
+}
+
+export interface TelemetryFrame {
+  type: "telemetry";
+  robots: TelemetrySample[];
+}
+
+export interface RobotType {
+  name: string;
+  description: string;
+  capabilities: string[];
+}
+
+export interface BridgeStatus {
+  robot_id: string;
+  running: boolean;
+  restarts: number;
+  config_path: string | null;
 }
 
 export interface PendingRegistration {
   mac_address: string;
   hostname: string | null;
   ip_address: string | null;
+  status?: string;
   first_seen_at: string | null;
   last_seen_at: string | null;
 }
@@ -68,7 +129,14 @@ export interface LocationPoint {
   created_at: string | null;
 }
 
-export type TaskStatus = "pending" | "running" | "paused" | "completed" | "failed" | "cancelled" | string;
+export type TaskStatus =
+  | "pending"
+  | "running"
+  | "paused"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | string;
 
 export interface Task {
   id: string;
@@ -82,6 +150,17 @@ export interface Task {
   created_at: string | null;
   started_at: string | null;
   finished_at: string | null;
+}
+
+/** In-memory progress served by the task engine (no database read). */
+export interface TaskProgress {
+  task_id: string;
+  robot_id: string;
+  leg: string | null;
+  completed_repeats: number;
+  repeats: number;
+  status: string;
+  message?: string | null;
 }
 
 export interface MapMetadata {
@@ -110,6 +189,11 @@ export interface SystemInfo {
   ros_enabled: boolean;
   ros_available: boolean;
   ros_error: string | null;
+  ros_domain_id: number;
   connected_robots: string[];
+  robot_types: string[];
   slam_running: boolean;
+  domain_bridge_enabled: boolean;
+  bridges: BridgeStatus[];
+  telemetry_ws_interval_seconds: number;
 }
