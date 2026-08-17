@@ -1,37 +1,42 @@
-version: "3.9"
-
 services:
-  db:
-    image: postgres:16-alpine
+  mongo:
+    image: mongo:7
+    command: ["--bind_ip_all"]
     environment:
-      POSTGRES_USER: swarm
-      POSTGRES_PASSWORD: swarm
-      POSTGRES_DB: swarm
+      MONGO_INITDB_DATABASE: fleet_management
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - mongodata:/data/db
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U swarm"]
-      interval: 5s
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
       retries: 10
+    # Host networking so the API (also host-networked for DDS) can reach it.
+    network_mode: host
 
   api:
     build: .
     depends_on:
-      db:
+      mongo:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql+psycopg://swarm:swarm@db:5432/swarm
-      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD}
       ENVIRONMENT: production
-      AUTO_CREATE_TABLES: "false"
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:?set BOOTSTRAP_ADMIN_PASSWORD}
+      BOOTSTRAP_OPERATOR_PASSWORD: ${BOOTSTRAP_OPERATOR_PASSWORD:?set BOOTSTRAP_OPERATOR_PASSWORD}
+      MONGO_MODE: local
+      MONGO_URI: mongodb://127.0.0.1:27017
+      MONGO_DB_NAME: fleet_management
+      CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:5173"]}
       ROS_ENABLED: "true"
       ROS_DOMAIN_ID: "0"
-    # ROS 2 DDS discovery needs the host network.
+      DOMAIN_BRIDGE_ENABLED: "true"
+      AUTOSTART_ROBOT_CONTROLLERS: "true"
+    # ROS 2 DDS discovery and domain_bridge both need the host network.
     network_mode: host
     volumes:
       - ./maps:/srv/app/maps
       - ./data:/srv/app/data
 
 volumes:
-  pgdata:
+  mongodata:
