@@ -23,8 +23,11 @@ import {
   queryKeys,
   robotStatusQuery,
   robotsQuery,
+  taskProgressQuery,
   tasksQuery,
 } from "@/lib/api/queries";
+import { useFleetTelemetry } from "@/lib/api/telemetry";
+import { CapabilityPanel } from "@/components/fleet/CapabilityPanel";
 import { cn } from "@/lib/utils";
 
 interface ConsoleSearch {
@@ -61,7 +64,10 @@ function ConsolePage() {
   const navigate = Route.useNavigate();
   const queryClient = useQueryClient();
 
-  const { data: robots = [] } = useQuery(robotsQuery());
+  // Live pose/battery/nav arrive on one shared socket instead of per-robot polls.
+  const live = useFleetTelemetry();
+
+  const { data: robots = [] } = useQuery(robotsQuery(live));
   const { data: map } = useQuery(currentMapQuery());
   const { data: locations = [] } = useQuery(locationsQuery());
 
@@ -69,8 +75,11 @@ function ConsolePage() {
   const robot = robots.find((item) => item.id === selectedId) ?? null;
   const online = robot?.status === "online";
 
-  const { data: telemetry } = useQuery(robotStatusQuery(selectedId, online));
+  const { data: telemetry } = useQuery(robotStatusQuery(selectedId, live && online));
   const { data: tasks = [] } = useQuery({ ...tasksQuery(selectedId ?? undefined), enabled: Boolean(selectedId) });
+
+  const missionActive = Boolean(robot?.active_task_id);
+  const { data: progress } = useQuery(taskProgressQuery(selectedId, missionActive));
 
   const setSearch = useCallback(
     (patch: Partial<ConsoleSearch>) => {
@@ -225,6 +234,18 @@ function ConsolePage() {
           </div>
         </div>
 
+        {progress && (
+          <div className="rounded-lg border border-border bg-card p-4 text-sm">
+            <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              Mission progress
+            </h2>
+            <p className="text-muted-foreground">
+              <span className="text-foreground">{progress.leg ?? progress.status}</span> ·{" "}
+              {progress.completed_repeats}/{progress.repeats} cycles
+            </p>
+          </div>
+        )}
+
         <div className="rounded-lg border border-border bg-card p-4">
           <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">Task log</h2>
           <ul className="space-y-2 text-sm">
@@ -289,6 +310,13 @@ function ConsolePage() {
             <OctagonX className="size-4" /> Emergency stop
           </Button>
         </div>
+
+        <CapabilityPanel
+          robotId={selectedId}
+          capabilities={(robot?.capabilities as string[]) ?? []}
+          telemetry={telemetry}
+          disabled={!online}
+        />
       </aside>
     </div>
   );

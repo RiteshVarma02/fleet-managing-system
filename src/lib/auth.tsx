@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { api, AUTH_STORAGE_KEY, setAccessToken, setUnauthorizedHandler } from "./api/client";
+import { resetTelemetrySocket } from "./api/telemetry";
 import type { TokenResponse, User } from "./api/types";
 
 interface StoredSession {
@@ -47,6 +48,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(() => {
+    // Drop the telemetry socket too, otherwise it keeps retrying with a dead token.
+    resetTelemetrySocket();
     setAccessToken(null);
     setSession(null);
     if (typeof window !== "undefined") window.localStorage.removeItem(AUTH_STORAGE_KEY);
