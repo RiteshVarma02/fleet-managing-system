@@ -223,17 +223,65 @@ function Stat({ label, value, tone }: { label: string; value: string | number; t
   );
 }
 
-function PendingPanel({ registrations }: { registrations: { mac_address: string; hostname: string | null; ip_address: string | null }[] }) {
+function BridgePanel({ bridges }: { bridges: BridgeStatus[] }) {
+  return (
+    <div className="rounded-lg border border-border bg-card p-4">
+      <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+        Domain bridges ({bridges.filter((bridge) => bridge.running).length}/{bridges.length})
+      </h2>
+      {bridges.length === 0 && (
+        <p className="text-sm text-muted-foreground">No bridge processes running.</p>
+      )}
+      <ul className="space-y-2 text-sm">
+        {bridges.map((bridge) => (
+          <li key={bridge.robot_id} className="flex items-center justify-between gap-2">
+            <span className="truncate font-medium">{bridge.robot_id}</span>
+            <span
+              className={`shrink-0 text-xs uppercase ${bridge.running ? "text-chart-2" : "text-destructive"}`}
+            >
+              {bridge.running ? "up" : "down"}
+              {bridge.restarts > 0 && ` · ${bridge.restarts} restarts`}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+interface Draft {
+  name: string;
+  type: string;
+}
+
+function PendingPanel({
+  registrations,
+}: {
+  registrations: { mac_address: string; hostname: string | null; ip_address: string | null }[];
+}) {
   const queryClient = useQueryClient();
-  const [names, setNames] = useState<Record<string, string>>({});
+  const [drafts, setDrafts] = useState<Record<string, Draft>>({});
+  // Static registry — one request per session, so the picker always matches
+  // the robot types the backend can actually compose.
+  const { data: robotTypes = [] } = useQuery(robotTypesQuery());
+  const defaultType = robotTypes[0]?.name ?? "differential_drive";
+
+  const draftFor = (mac: string): Draft => drafts[mac] ?? { name: "", type: defaultType };
+  const patch = (mac: string, changes: Partial<Draft>) =>
+    setDrafts((prev) => ({ ...prev, [mac]: { ...draftFor(mac), ...changes } }));
 
   const approve = useMutation({
-    mutationFn: ({ mac, name }: { mac: string; name: string }) =>
-      api.post("/robots/registrations/approve", { mac_address: mac, custom_name: name }),
+    mutationFn: ({ mac, draft }: { mac: string; draft: Draft }) =>
+      api.post("/robots/registrations/approve", {
+        mac_address: mac,
+        custom_name: draft.name,
+        robot_type: draft.type,
+      }),
     onSuccess: () => {
       toast.success("Robot approved");
       queryClient.invalidateQueries({ queryKey: queryKeys.pendingRegistrations });
       queryClient.invalidateQueries({ queryKey: queryKeys.robots });
+      queryClient.invalidateQueries({ queryKey: queryKeys.bridges });
     },
     onError: (error: Error) => toast.error(error.message),
   });
@@ -252,48 +300,75 @@ function PendingPanel({ registrations }: { registrations: { mac_address: string;
       <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
         Pending registrations ({registrations.length})
       </h2>
-      {registrations.length === 0 && <p className="text-sm text-muted-foreground">No robots awaiting approval.</p>}
+      {registrations.length === 0 && (
+        <p className="text-sm text-muted-foreground">No robots awaiting approval.</p>
+      )}
       <ul className="space-y-3">
-        {registrations.map((registration) => (
-          <li key={registration.mac_address} className="rounded-md border border-border p-3">
-            <p className="font-mono text-xs">{registration.mac_address}</p>
-            <p className="text-xs text-muted-foreground">
-              {registration.hostname ?? "unknown host"} · {registration.ip_address ?? "no ip"}
-            </p>
-            <div className="mt-2 flex gap-2">
-              <Input
-                aria-label={`Name for ${registration.mac_address}`}
-                placeholder="Robot name"
-                value={names[registration.mac_address] ?? ""}
-                onChange={(event) =>
-                  setNames((prev) => ({ ...prev, [registration.mac_address]: event.target.value }))
-                }
-                className="h-8"
-              />
-              <Button
-                size="sm"
-                disabled={!names[registration.mac_address]?.trim() || approve.isPending}
-                onClick={() =>
-                  approve.mutate({
-                    mac: registration.mac_address,
-                    name: names[registration.mac_address].trim(),
-                  })
-                }
-              >
-                <CheckCircle2 className="size-4" />
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                aria-label="Reject registration"
-                onClick={() => reject.mutate(registration.mac_address)}
-              >
-                <CircleSlash className="size-4" />
-              </Button>
-            </div>
-          </li>
-        ))}
+        {registrations.map((registration) => {
+          const draft = draftFor(registration.mac_address);
+          return (
+            <li key={registration.mac_address} className="rounded-md border border-border p-3">
+              <p className="font-mono text-xs">{registration.mac_address}</p>
+              <p className="text-xs text-muted-foreground">
+                {registration.hostname ?? "unknown host"} · {registration.ip_address ?? "no ip"}
+              </p>
+              <div className="mt-2 space-y-2">
+                <Input
+                  aria-label={`Name for ${registration.mac_address}`}
+                  placeholder="Robot name"
+                  value={draft.name}
+                  onChange={(event) =>
+                    patch(registration.mac_address, { name: event.target.value })
+                  }
+                  className="h-8"
+                />
+                <div className="flex gap-2">
+                  <Select
+                    value={draft.type}
+                    onValueChange={(value) => patch(registration.mac_address, { type: value })}
+                  >
+                    <SelectTrigger
+                      className="h-8 flex-1"
+                      aria-label={`Robot type for ${registration.mac_address}`}
+                    >
+                      <SelectValue placeholder="Robot type" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {robotTypes.map((type) => (
+                        <SelectItem key={type.name} value={type.name}>
+                          {type.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    size="sm"
+                    aria-label={`Approve ${registration.mac_address}`}
+                    disabled={!draft.name.trim() || approve.isPending}
+                    onClick={() =>
+                      approve.mutate({
+                        mac: registration.mac_address,
+                        draft: { ...draft, name: draft.name.trim() },
+                      })
+                    }
+                  >
+                    <CheckCircle2 className="size-4" />
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    aria-label="Reject registration"
+                    onClick={() => reject.mutate(registration.mac_address)}
+                  >
+                    <CircleSlash className="size-4" />
+                  </Button>
+                </div>
+              </div>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
 }
+
