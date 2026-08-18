@@ -10,15 +10,26 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api/client";
 import {
+  bridgesQuery,
   currentMapQuery,
   locationsQuery,
   pendingRegistrationsQuery,
   queryKeys,
+  robotTypesQuery,
   robotsQuery,
   tasksQuery,
 } from "@/lib/api/queries";
+import { useFleetTelemetry } from "@/lib/api/telemetry";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useAuth } from "@/lib/auth";
-import type { Robot } from "@/lib/api/types";
+import type { BridgeStatus, Robot } from "@/lib/api/types";
+
 
 export const Route = createFileRoute("/_app/fleet")({
   ssr: false,
