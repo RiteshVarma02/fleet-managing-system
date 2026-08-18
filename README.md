@@ -1,26 +1,63 @@
-# Production Ready Code
+# Fleet Management System
 
-I need you to make only this file as scalable and multifile project, and correct the code if there is any wrong code in it. 
+Web control plane for a heterogeneous ROS 2 robot fleet: a FastAPI + MongoDB
+backend that owns the ROS runtime and per-robot domain bridges, and a React
+dashboard for administrators and operators.
 
-DO NOT GIVE THE FRONTEND, GIVE ME THE PRODUCTION GRADE MULTI FILE OF THIS FILE
+- Backend documentation and API reference: [`backend/README.md`](backend/README.md)
 
-This project was built with [Lovable](https://lovable.dev).
+## Roles
 
-## Build with Lovable
+| Role | Landing page | Can do |
+| --- | --- | --- |
+| Administrator | `/fleet` | Monitor every robot on the map, approve/reject robot registrations (name + robot type), watch domain-bridge health, remove robots, connect/disconnect, jump into any console |
+| Operator | `/console` | Pick one robot, teleoperate it with the joystick, send Nav2 goals, dock/undock, fork/gripper commands, dispatch and cancel pick & drop missions, while still seeing the whole fleet on the map |
 
-Continue developing this project in the [Lovable editor](https://lovable.dev/projects/d2cd62ea-1ad2-4c58-a396-df0afbf01c3a).
+## Run it
 
-- **Ship faster**: describe what you want to build and Lovable handles the code.
-- **Stay in sync**: every change made in Lovable is committed straight to this repository.
-- **Full ownership**: this code is yours. Push to `main` on GitHub and your changes sync back into Lovable, ready for your next prompt.
+```bash
+# 1. backend (see backend/README.md for the full setup)
+cd backend && cp .env.example .env
+docker compose up -d --build
 
-## Development
-
-Prefer working locally? You need Node.js and npm — [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating).
-
-```sh
-git clone <this-repository-url>
-cd <repository-name>
-npm i
-npm run dev
+# 2. frontend
+cp .env.example .env      # VITE_API_BASE_URL=http://localhost:8000/api/v1
+bun install
+bun run dev
 ```
+
+Sign in with the bootstrap credentials from `backend/.env`
+(`BOOTSTRAP_ADMIN_USERNAME` / `BOOTSTRAP_OPERATOR_USERNAME`) and change the
+passwords afterwards.
+
+## Frontend architecture
+
+```
+src/
+  lib/api/client.ts      fetch wrapper: bearer token, envelope unwrap, GET de-dup
+  lib/api/queries.ts     TanStack Query options + the whole polling budget
+  lib/api/telemetry.ts   one shared WebSocket, merged into the query caches
+  lib/api/types.ts       mirrors backend/app/schemas/*
+  lib/auth.tsx           JWT session, role routing, 401 handling
+  components/fleet/      FleetMap (canvas occupancy grid), Joystick,
+                         RobotCard, CapabilityPanel
+  routes/                login, _app layout (E-stop + health), fleet, console
+```
+
+### Keeping backend load low
+
+- **One WebSocket per tab.** `/telemetry/ws` delivers a single fleet-wide frame
+  per interval; samples are merged into the existing `robots` and
+  `robots/:id/status` caches, so components keep using the same hooks.
+- **Polling backs off when the socket is up:** fleet list 3s → 30s, per-robot
+  telemetry 1s → off. If the socket drops, polling resumes automatically, so the
+  UI degrades instead of freezing.
+- **Static data is fetched once:** robot types are cached for the session, the
+  occupancy grid for 10 minutes, locations for 5.
+- **Identical in-flight GETs are de-duplicated** in the client, so several
+  widgets reading the same resource cost one request.
+- **Teleop is throttled** in the joystick component and mission progress is read
+  from the task engine's in-memory state, never from a database scan.
+- **Capability-driven UI:** each robot reports its capabilities, so fork and
+  gripper controls only appear for robots that have them — adding a robot type
+  server-side needs no frontend change.
