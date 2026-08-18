@@ -55,11 +55,16 @@ function FleetMonitorPage() {
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<string | null>(null);
 
-  const { data: robots = [], isLoading } = useQuery(robotsQuery());
+  // One socket for the whole tab; the fleet poll drops to 30s while it is up.
+  const live = useFleetTelemetry();
+
+  const { data: robots = [], isLoading } = useQuery(robotsQuery(live));
   const { data: map } = useQuery(currentMapQuery());
   const { data: locations = [] } = useQuery(locationsQuery());
   const { data: tasks = [] } = useQuery(tasksQuery());
   const { data: pending = [] } = useQuery({ ...pendingRegistrationsQuery(), enabled: isAdmin });
+  const { data: bridges = [] } = useQuery(bridgesQuery(isAdmin));
+
 
   const invalidateRobots = () => queryClient.invalidateQueries({ queryKey: queryKeys.robots });
 
