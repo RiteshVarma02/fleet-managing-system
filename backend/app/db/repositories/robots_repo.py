@@ -71,7 +71,8 @@ async def upsert(db, robot_id: str, **fields: Any) -> Dict[str, Any]:
 
     on_insert = {k: v for k, v in DEFAULTS.items() if k not in updates}
     on_insert["created_at"] = utcnow()
-    on_insert.setdefault("display_name", robot_id)
+    if "display_name" not in updates:
+        on_insert["display_name"] = robot_id
 
     doc = await _col(db).find_one_and_update(
         {"robot_id": robot_id},
@@ -148,9 +149,14 @@ async def next_robot_id(db) -> str:
 
 
 async def next_domain_id(db, *, start: int) -> int:
-    """Lowest free ROS domain id at or above `start` (bridge assignment)."""
+    """Lowest free ROS domain id at or above `start` (bridge assignment).
+
+    Soft-deleted robots do not hold their domain, so it can be reused.
+    """
     used = set()
-    cursor = _col(db).find({"ros_domain_id": {"$ne": None}}, {"ros_domain_id": 1})
+    cursor = _col(db).find(
+        {"ros_domain_id": {"$ne": None}, "is_deleted": False}, {"ros_domain_id": 1}
+    )
     for doc in await cursor.to_list(length=5000):
         used.add(int(doc["ros_domain_id"]))
     domain = start

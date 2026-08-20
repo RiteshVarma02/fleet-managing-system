@@ -294,8 +294,19 @@ async def approve(
     if existing and existing.get("mac_address") and existing.get("mac_address") != body.mac_address:
         raise ConflictError(f"Robot id '{resolved_id}' is already used by another robot")
 
+    # Re-approving a robot whose MAC is already known: a soft-deleted robot is
+    # resurrected under its stable id/domain instead of tripping the MAC unique
+    # index; a live one is rejected as already registered.
+    existing_by_mac = await robots_repo.get_by_mac(db, body.mac_address)
+    if existing_by_mac:
+        if not bool(existing_by_mac.get("is_deleted")):
+            raise ConflictError(
+                f"MAC {body.mac_address} is already registered as robot '{existing_by_mac.get('robot_id')}'"
+            )
+        resolved_id = str(existing_by_mac["robot_id"])
+
     domain_id: Optional[int] = body.ros_domain_id
-    if domain_id is None:
+    if existing_by_mac is None and domain_id is None:
         domain_id = await robots_repo.next_domain_id(
             db, start=settings.domain_bridge_default_robot_domain
         )
@@ -309,6 +320,7 @@ async def approve(
         mac_address=body.mac_address,
         robot_type=robot_type,
         ros_domain_id=domain_id,
+        is_deleted=False,
     )
     await robot_registrations_repo.set_status(db, body.mac_address, RegistrationStatus.approved)
 
