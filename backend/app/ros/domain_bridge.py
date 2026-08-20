@@ -31,8 +31,16 @@ from app.ros.topics_registry import DOWN, UP, resolve_topics
 logger = get_logger(__name__)
 
 
-def build_bridge_config(robot_id: str, robot_type: str, robot_domain: int) -> Dict[str, Any]:
-    """Declarative `domain_bridge` config for one robot, derived from the registry."""
+def build_bridge_config(
+    robot_id: str, robot_type: str, robot_domain: int, *, share_map: bool = False
+) -> Dict[str, Any]:
+    """Declarative `domain_bridge` config for one robot, derived from the registry.
+
+    When `share_map` is true an extra DOWN topic is added that forwards the
+    server's global `/map` (the active fleet map) to the robot's own `/map`, so
+    Nav2 on the robot domain can consume a static map. The key `/map` keeps it
+    distinct from the robot's UP `/map` entry (key `map`).
+    """
     server_domain = settings.ros_domain_id
     topics: Dict[str, Any] = {}
 
@@ -52,11 +60,21 @@ def build_bridge_config(robot_id: str, robot_type: str, robot_domain: int) -> Di
                 "to_domain": robot_domain,
                 "remap": spec["robot"],
             }
+
+    if share_map:
+        topics["/map"] = {
+            "type": "nav_msgs/msg/OccupancyGrid",
+            "from_domain": server_domain,
+            "to_domain": robot_domain,
+            "remap": "/map",
+        }
     return {"name": f"{robot_id}_bridge", "topics": topics}
 
 
-def write_bridge_config(robot_id: str, robot_type: str, robot_domain: int) -> Path:
-    config = build_bridge_config(robot_id, robot_type, robot_domain)
+def write_bridge_config(
+    robot_id: str, robot_type: str, robot_domain: int, *, share_map: bool = False
+) -> Path:
+    config = build_bridge_config(robot_id, robot_type, robot_domain, share_map=share_map)
     path = settings.domain_bridge_config_dir / f"{robot_id}.yaml"
     path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     return path
@@ -149,11 +167,36 @@ class DomainBridgeManager:
             and shutil.which(settings.domain_bridge_command[0]) is not None
         )
 
-    def ensure(self, robot_id: str, robot_type: str, robot_domain: Optional[int]) -> Dict[str, Any]:
+    def configure(
+        self,
+        robot_id: str,
+        robot_type: str,
+        robot_domain: Optional[int],
+        *,
+        share_map: bool = False,
+    ) -> Path:
+        """Write the bridge YAML without (re)starting the process.
+
+        Used when a robot is offline so the new config takes effect on its next
+        connect.
+        """
         domain = int(
             robot_domain if robot_domain is not None else settings.domain_bridge_default_robot_domain
         )
-        config_path = write_bridge_config(robot_id, robot_type, domain)
+        return write_bridge_config(robot_id, robot_type, domain, share_map=share_map)
+
+    def ensure(
+        self,
+        robot_id: str,
+        robot_type: str,
+        robot_domain: Optional[int],
+        *,
+        share_map: bool = False,
+    ) -> Dict[str, Any]:
+        domain = int(
+            robot_domain if robot_domain is not None else settings.domain_bridge_default_robot_domain
+        )
+        config_path = write_bridge_config(robot_id, robot_type, domain, share_map=share_map)
 
         if domain == settings.ros_domain_id:
             return {
@@ -193,6 +236,21 @@ class DomainBridgeManager:
             return False
         bridge.stop()
         return True
+
+    def reconfigure(
+        self,
+        robot_id: str,
+        robot_type: str,
+        robot_domain: Optional[int],
+        *,
+        share_map: bool = False,
+    ) -> Dict[str, Any]:
+        """Regenerate the config and restart the bridge so it takes effect now."""
+        with self._lock:
+            existing = self._bridges.pop(robot_id, None)
+        if existing:
+            existing.stop()
+        return self.ensure(robot_id, robot_type, robot_domain, share_map=share_map)
 
     def status(self) -> List[Dict[str, Any]]:
         with self._lock:

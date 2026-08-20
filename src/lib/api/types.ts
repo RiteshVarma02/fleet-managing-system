@@ -3,8 +3,11 @@
 export type Role = "admin" | "operator";
 
 export interface User {
+  id: string | null;
   username: string;
   role: Role | string;
+  active: boolean;
+  last_login_at: string | null;
 }
 
 export interface TokenResponse {
@@ -52,6 +55,8 @@ export interface Robot {
   ros_domain_id: number | null;
   approved: boolean;
   connected: boolean;
+  map_available: boolean;
+  map_share_enabled: boolean;
   active_task_id: string | null;
   last_seen_at: string | null;
 }
@@ -89,7 +94,8 @@ export interface TelemetrySample {
   fork_height?: number | null;
   arm_state?: string | null;
   emergency_active?: boolean;
-  updated_at?: string;
+  /** Server-side publish time (ISO 8601), added by the telemetry bus. */
+  at?: string;
 }
 
 export interface TelemetryFrame {
@@ -108,6 +114,12 @@ export interface BridgeStatus {
   running: boolean;
   restarts: number;
   config_path: string | null;
+}
+
+export interface DomainInfo {
+  next_domain_id: number;
+  server_domain_id: number;
+  used: { domain: number; robot_id: string }[];
 }
 
 export interface PendingRegistration {
@@ -130,13 +142,7 @@ export interface LocationPoint {
 }
 
 export type TaskStatus =
-  | "pending"
-  | "running"
-  | "paused"
-  | "completed"
-  | "failed"
-  | "cancelled"
-  | string;
+  "pending" | "running" | "paused" | "completed" | "failed" | "cancelled" | string;
 
 export interface Task {
   id: string;
@@ -177,11 +183,30 @@ export interface MapImage {
   metadata: MapMetadata;
 }
 
+/** `POST /maps/save-from-robot` — the saved map set plus its normalized name. */
+export interface SavedMap extends MapImage {
+  name: string;
+}
+
+/** A robot's own map from `GET /robots/{id}/map`; `available` is false until the grid is seen. */
+export interface RobotMap {
+  available: boolean;
+  image: string | null;
+  metadata: MapMetadata | null;
+}
+
 export interface MapSummary {
   name: string;
   modified_at: string;
   has_yaml: boolean;
   has_image: boolean;
+  active: boolean;
+}
+
+/** The fleet's active map pointer (name + active flag) as surfaced by `/maps`. */
+export interface MapDetail {
+  name: string;
+  active: boolean;
 }
 
 export interface SystemInfo {

@@ -108,6 +108,54 @@ ROS_DOMAIN_ID=2 python3 robot_action_forwarder.py --robot-id robot_1
    name, robot type and (optionally) a domain id — then the bridge and
    controller start and the robot is live.
 
+## Maps and map sharing
+
+The server owns the fleet map (`nav_msgs/OccupancyGrid` on `/map` on the server
+domain) plus a set of named maps under `maps/`. All flows are on the **Maps**
+page in the dashboard:
+
+- **Upload & activate** — `POST /maps/load` turns an uploaded PNG/PGM/JPG into
+  an OccupancyGrid and makes it the active map; `GET /maps/current` serves the
+  current grid as a base64 image, `GET /maps` lists the saved maps (with the
+  `active` flag).
+- **Build from a robot** — `POST /maps/slam/start` runs cartographer on a
+  robot; `GET /robots/{id}/map` returns its growing grid (polled every 2s in
+  the UI); `POST /maps/save-from-robot` writes `.pgm`/`.yaml`/`.png` straight
+  from the captured grid (no `map_saver_cli` involved); `POST /maps/activate`
+  then promotes it fleet-wide. `POST /maps/from-robot` does save-and-activate
+  in one step from the console.
+- **Map sharing** — `POST /robots/{id}/map-share` toggles
+  `map_share_enabled` on the robot document and regenerates its bridge YAML
+  with an extra DOWN `/map` topic (server `/map` → robot `/map`), restarting
+  the bridge when the robot is connected so its Nav2 picks up the fleet map.
+  The YAML key `/map` is deliberately distinct from the robot's own UP `/map`
+  entry (key `map`) so the two never collide in the bridge config.
+
+The same registry (`topics_registry.py`) drives the normal bridge config; the
+map-share entry is the only special case, added by `build_bridge_config(…,
+share_map=True)`.
+
+## Tests
+
+Unit tests cover the pieces that are easy to get subtly wrong and are needed
+across every map milestone:
+
+- Grid ↔ image round-trip (`tests/test_map_conversion.py`) — cell-class mapping
+  (free/occupied/unknown), metadata (resolution/origin) and the bottom-up row
+  flip must round-trip exactly.
+- Domain-bridge config (`tests/test_domain_bridge.py`) — UP/DOWN topic
+  direction and remap shape, and the with/without map-share variants
+  (`/map` DOWN topic appears only when sharing; no key collision).
+- ROS-domain assignment (`tests/test_domain_validation.py`) — `next_domain_id`
+  skips used/soft-deleted domains and the server's own reserved domain, plus
+  the Pydantic range checks on `ros_domain_id`.
+
+```bash
+cd backend
+pip install -r requirements-dev.txt
+python -m pytest          # honours pytest.ini (disables ROS pytest plugins)
+```
+
 ## Load characteristics
 
 The hot path never touches MongoDB. ROS callbacks write into
@@ -129,7 +177,7 @@ Mongo write and one WebSocket frame per interval. Consequently:
 | system | `GET /health`, `GET /ready`, `GET /system/info` |
 | auth | `POST /auth/login`, `GET /auth/me` |
 | users | `GET/POST /users`, `PATCH /users/{id}`, `POST /users/me/password` (admin except the last) |
-| robots | `GET /robots`, `GET /robots/types`, `GET /robots/bridges`, `POST /robots/connect|disconnect`, `GET /robots/{id}/status`, `DELETE /robots/{id}` |
+| robots | `GET /robots`, `GET /robots/types`, `GET /robots/bridges`, `GET /robots/domains/next`, `POST /robots/connect|disconnect`, `GET /robots/{id}/status`, `GET /robots/{id}/map`, `POST /robots/{id}/map-share`, `DELETE /robots/{id}` |
 | teleop | `POST /robots/move|stop|emergency-stop|emergency-stop-all` |
 | capabilities | `POST /robots/goal`, `/robots/goal/cancel`, `/robots/initial-pose`, `/robots/dock`, `/robots/fork`, `/robots/gripper` |
 | registration | `POST /robots/register`, `GET /robots/registrations/pending`, `POST /robots/registrations/approve|reject` |
@@ -137,7 +185,7 @@ Mongo write and one WebSocket frame per interval. Consequently:
 | tasks | `GET/POST /tasks`, `GET /tasks/{id}`, `PATCH /tasks/{id}`, `GET /tasks/{id}/history`, `POST /tasks/{id}/start|cancel`, `GET /tasks/{id}/progress` |
 | pick & drop | `POST /tasks/pickdrop/start|stop`, `GET /tasks/pickdrop/{robot_id}/status` |
 | requests | `POST /tasks/requests`, `GET /tasks/requests/unassigned` (auto-assigned to idle robots) |
-| maps | `GET /maps`, `GET /maps/current`, `POST /maps/upload|activate|slam/start|slam/stop|save`, `DELETE /maps/{name}` |
+| maps | `GET /maps`, `GET /maps/current`, `GET /maps/slam/status`, `POST /maps/load|activate|from-robot|save-from-robot|save|slam/start|slam/stop`, `DELETE /maps/{name}` |
 | telemetry | `WS /telemetry/ws?token=<jwt>` — one fleet frame per interval |
 
 Roles: `admin` can manage users, approve robots and delete them; `operator` can

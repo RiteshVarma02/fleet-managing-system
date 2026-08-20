@@ -50,6 +50,16 @@ class GripperCommand(RobotIdBody):
     command: str = Field(pattern="^(open|close|home)$")
 
 
+class MapShareCommand(BaseModel):
+    """Toggle forwarding the fleet's active `/map` down to this robot.
+
+    `robot_id` lives in the URL path; the body only carries the flag so a
+    mismatched body field can never target a different robot than the path.
+    """
+
+    enabled: bool = False
+
+
 class RobotOut(BaseModel):
     id: str
     name: str
@@ -64,6 +74,8 @@ class RobotOut(BaseModel):
     ros_domain_id: Optional[int] = None
     approved: bool = False
     connected: bool = False
+    map_available: bool = False
+    map_share_enabled: bool = False
     active_task_id: Optional[str] = None
     last_seen_at: Optional[datetime] = None
 
@@ -75,6 +87,7 @@ class RobotOut(BaseModel):
         connected: bool = False,
         capabilities: Optional[List[str]] = None,
         live: Optional[Dict[str, Any]] = None,
+        map_available: bool = False,
     ) -> "RobotOut":
         position = (live or {}).get("position") or doc.get("last_position") or {}
         battery = (live or {}).get("battery")
@@ -94,6 +107,8 @@ class RobotOut(BaseModel):
             ros_domain_id=doc.get("ros_domain_id"),
             approved=bool(doc.get("approved")),
             connected=connected,
+            map_available=map_available,
+            map_share_enabled=bool(doc.get("map_share_enabled")),
             active_task_id=doc.get("active_task_id"),
             last_seen_at=doc.get("last_seen_at"),
         )

@@ -3,13 +3,16 @@ import { queryOptions } from "@tanstack/react-query";
 import { api } from "./client";
 import type {
   BridgeStatus,
+  DomainInfo,
   LocationPoint,
   MapImage,
   MapSummary,
   PendingRegistration,
   Robot,
+  RobotMap,
   RobotTelemetry,
   RobotType,
+  SavedMap,
   SystemInfo,
   Task,
   TaskProgress,
@@ -40,8 +43,10 @@ export const POLL = {
 export const queryKeys = {
   robots: ["robots"] as const,
   robotStatus: (id: string) => ["robots", id, "status"] as const,
+  robotMap: (id: string) => ["robots", id, "map"] as const,
   robotTypes: ["robots", "types"] as const,
   bridges: ["robots", "bridges"] as const,
+  domains: ["robots", "domains", "next"] as const,
   pendingRegistrations: ["robots", "registrations", "pending"] as const,
   locations: ["locations"] as const,
   tasks: (robotId?: string) => (robotId ? (["tasks", robotId] as const) : (["tasks"] as const)),
@@ -69,6 +74,18 @@ export const robotStatusQuery = (robotId: string | null, live = false) =>
     staleTime: 500,
   });
 
+export const robotMapQuery = (robotId: string | null, live = false) =>
+  queryOptions({
+    queryKey: queryKeys.robotMap(robotId ?? "none"),
+    queryFn: ({ signal }) => api.get<RobotMap>(`/robots/${robotId}/map`, signal),
+    enabled: Boolean(robotId),
+    // While the telemetry socket is up (robot live / SLAM building), poll the
+    // grid fast so the preview tracks the growing map; otherwise back off.
+    refetchInterval: robotId && live ? POLL.progress : 10_000,
+    staleTime: 1_000,
+    retry: false,
+  });
+
 export const robotTypesQuery = () =>
   queryOptions({
     queryKey: queryKeys.robotTypes,
@@ -85,6 +102,16 @@ export const bridgesQuery = (enabled = true) =>
     refetchInterval: enabled ? 15_000 : false,
     staleTime: 10_000,
     enabled,
+  });
+
+export const nextDomainQuery = () =>
+  queryOptions({
+    queryKey: queryKeys.domains,
+    queryFn: ({ signal }) => api.get<DomainInfo>("/robots/domains/next", signal),
+    // Domain usage only changes on approve/reject/delete; a slow poll keeps
+    // the pending panel's default fresh across several approvals.
+    refetchInterval: 30_000,
+    staleTime: 15_000,
   });
 
 export const pendingRegistrationsQuery = () =>
@@ -143,8 +170,36 @@ export const mapsQuery = () =>
   queryOptions({
     queryKey: queryKeys.maps,
     queryFn: ({ signal }) => api.get<MapSummary[]>("/maps", signal),
+    // The list is re-fetched after upload/activate/delete mutations.
     staleTime: 5 * 60_000,
   });
+
+/** Mutation helpers — passed to `useMutation({ mutationFn })`. */
+export const uploadMap = (formData: FormData) => api.upload<MapImage>("/maps/load", formData);
+
+export const activateMap = (mapName: string) =>
+  api.post<MapImage>("/maps/activate", { map_name: mapName });
+
+export const promoteRobotMap = ({ robotId, mapName }: { robotId: string; mapName?: string }) =>
+  api.post<MapImage>("/maps/from-robot", { robot_id: robotId, map_name: mapName });
+
+/** Start SLAM on a robot (cartographer) so it can build a map of the facility. */
+export const slamStart = ({ robotId, mapName }: { robotId: string; mapName?: string }) =>
+  api.post<{ pid: number; map_name: string | null; robot_id: string }>("/maps/slam/start", {
+    robot_id: robotId,
+    map_name: mapName,
+  });
+
+/** Stop the running SLAM session on the selected robot. */
+export const slamStop = () => api.post<{ message: string }>("/maps/slam/stop");
+
+/** Persist a robot's captured grid as .pgm/.yaml/.png (build-map flow). */
+export const saveFromRobot = ({ robotId, filename }: { robotId: string; filename: string }) =>
+  api.post<SavedMap>("/maps/save-from-robot", { robot_id: robotId, filename });
+
+/** Toggle forwarding the fleet's active /map down to a robot's Nav2. */
+export const mapShareToggle = ({ robotId, enabled }: { robotId: string; enabled: boolean }) =>
+  api.post<Robot>(`/robots/${robotId}/map-share`, { robot_id: robotId, enabled });
 
 export const systemInfoQuery = () =>
   queryOptions({

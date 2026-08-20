@@ -27,6 +27,7 @@ class Collections:
     task_history = "task_history"
     locations = "locations"
     maps = "maps"
+    map_state = "map_state"
     pending_requests = "pending_requests"
 
 

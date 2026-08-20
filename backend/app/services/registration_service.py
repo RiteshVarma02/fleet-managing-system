@@ -40,6 +40,7 @@ async def handle_registration(
             robot_id,
             str(robot.get("robot_type") or DEFAULT_ROBOT_TYPE),
             robot.get("ros_domain_id"),
+            share_map=bool(robot.get("map_share_enabled")),
         )
         if not started:
             logger.warning("Controller not started for %s: %s", robot_id, message)

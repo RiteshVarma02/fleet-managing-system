@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect } from "react";
-import { Bot, LogOut, OctagonX, ShieldCheck, UserCog } from "lucide-react";
+import { Bot, LogOut, Map as MapIcon, OctagonX, ShieldCheck, UserCog } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -42,8 +42,12 @@ function AppLayout() {
     ? [
         { to: "/fleet", label: "Fleet monitor", icon: ShieldCheck },
         { to: "/console", label: "Control console", icon: UserCog },
+        { to: "/maps", label: "Maps", icon: MapIcon },
       ]
-    : [{ to: "/console", label: "Control console", icon: UserCog }];
+    : [
+        { to: "/console", label: "Control console", icon: UserCog },
+        { to: "/maps", label: "Maps", icon: MapIcon },
+      ];
 
   return (
     <div className="flex min-h-screen flex-col bg-background">

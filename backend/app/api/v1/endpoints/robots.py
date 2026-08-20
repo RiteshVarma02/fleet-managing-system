@@ -26,12 +26,14 @@ from app.ros.topics_registry import (
     is_known_type,
 )
 from app.schemas.common import DataResponse, Position, StatusResponse, Velocity
+from app.schemas.map import MapMetadata, RobotMapResponse
 from app.schemas.robot import (
     BridgeStatusOut,
     DockCommand,
     ForkCommand,
     GripperCommand,
     MacAddressBody,
+    MapShareCommand,
     MoveCommand,
     PendingRegistrationOut,
     PoseCommand,
@@ -59,6 +61,7 @@ def _robot_out(view: dict) -> RobotOut:
         connected=view["connected"],
         capabilities=view["capabilities"],
         live=view["live"],
+        map_available=view["map_available"],
     )
 
 
@@ -178,6 +181,30 @@ async def status(
     )
 
 
+@router.get("/{robot_id}/map", response_model=DataResponse[RobotMapResponse])
+async def robot_map(
+    robot_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    _: Principal = Depends(get_current_user),
+):
+    """The robot's own latest map (from its controller), rendered as a PNG.
+
+    Returns `available: false` with a null image until the robot is connected
+    and has published a `/map` grid — never a 4xx/5xx for a missing map.
+    """
+    await robot_service.get_robot(db, robot_id)
+    data = robot_service.latest_map_image(robot_id)
+    if data is None:
+        return DataResponse(data=RobotMapResponse(available=False))
+    return DataResponse(
+        data=RobotMapResponse(
+            available=True,
+            image=data["image"],
+            metadata=MapMetadata(**data["metadata"]),
+        )
+    )
+
+
 @router.delete("/{robot_id}", response_model=StatusResponse)
 async def delete_robot(
     robot_id: str,
@@ -218,6 +245,22 @@ def emergency_stop_all(_: Principal = Depends(require_operator)):
         ros_manager.publish_emergency(robot_id, True)
         count += 1
     return StatusResponse(message=f"Emergency stop sent to {count} robot(s)")
+
+
+@router.post("/{robot_id}/map-share", response_model=DataResponse[RobotOut])
+async def set_map_share(
+    robot_id: str,
+    body: MapShareCommand,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    _: Principal = Depends(require_operator),
+):
+    """Toggle forwarding the fleet's active `/map` down to this robot's Nav2.
+
+    Regenerates the robot's bridge YAML (adding/removing the DOWN `/map` topic)
+    and restarts the bridge when the robot is connected.
+    """
+    result = await robot_service.set_map_share(db, robot_id, body.enabled)
+    return DataResponse(data=_robot_out(result))
 
 
 # --------------------------------------------------------------------------

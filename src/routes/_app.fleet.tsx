@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, CircleSlash, Plug, PlugZap, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -13,6 +13,7 @@ import {
   bridgesQuery,
   currentMapQuery,
   locationsQuery,
+  nextDomainQuery,
   pendingRegistrationsQuery,
   queryKeys,
   robotTypesQuery,
@@ -28,7 +29,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useAuth } from "@/lib/auth";
-import type { BridgeStatus, Robot } from "@/lib/api/types";
+import type { BridgeStatus, DomainInfo, Robot } from "@/lib/api/types";
 
 
 export const Route = createFileRoute("/_app/fleet")({
@@ -255,6 +256,8 @@ function BridgePanel({ bridges }: { bridges: BridgeStatus[] }) {
 interface Draft {
   name: string;
   type: string;
+  /** ROS domain as typed text; empty string means "auto-assign". */
+  domain: string;
 }
 
 function PendingPanel({
@@ -269,7 +272,36 @@ function PendingPanel({
   const { data: robotTypes = [] } = useQuery(robotTypesQuery());
   const defaultType = robotTypes[0]?.name ?? "differential_drive";
 
-  const draftFor = (mac: string): Draft => drafts[mac] ?? { name: "", type: defaultType };
+  // Next free ROS domain + domains held by live robots, so the field defaults
+  // to something free and can warn when the admin picks a taken one.
+  const { data: domainInfo } = useQuery(nextDomainQuery());
+
+  // Seed a draft per pending registration with the current next-free domain.
+  // Existing drafts are left untouched, so editing/approving one robot does not
+  // clobber the values the admin already set for the others.
+  useEffect(() => {
+    if (domainInfo == null) return;
+    setDrafts((prev) => {
+      const next = { ...prev };
+      for (const registration of registrations) {
+        if (!next[registration.mac_address]) {
+          next[registration.mac_address] = {
+            name: "",
+            type: defaultType,
+            domain: String(domainInfo.next_domain_id),
+          };
+        }
+      }
+      return next;
+    });
+  }, [domainInfo, registrations, defaultType]);
+
+  const draftFor = (mac: string): Draft =>
+    drafts[mac] ?? {
+      name: "",
+      type: defaultType,
+      domain: domainInfo != null ? String(domainInfo.next_domain_id) : "",
+    };
   const patch = (mac: string, changes: Partial<Draft>) =>
     setDrafts((prev) => ({ ...prev, [mac]: { ...draftFor(mac), ...changes } }));
 
@@ -279,12 +311,14 @@ function PendingPanel({
         mac_address: mac,
         custom_name: draft.name,
         robot_type: draft.type,
+        ros_domain_id: draft.domain.trim() === "" ? null : Number(draft.domain),
       }),
     onSuccess: () => {
       toast.success("Robot approved");
       queryClient.invalidateQueries({ queryKey: queryKeys.pendingRegistrations });
       queryClient.invalidateQueries({ queryKey: queryKeys.robots });
       queryClient.invalidateQueries({ queryKey: queryKeys.bridges });
+      queryClient.invalidateQueries({ queryKey: queryKeys.domains });
     },
     onError: (error: Error) => toast.error(error.message),
   });
@@ -309,6 +343,21 @@ function PendingPanel({
       <ul className="space-y-3">
         {registrations.map((registration) => {
           const draft = draftFor(registration.mac_address);
+          const domainText = draft.domain.trim();
+          const domainNum = domainText === "" ? null : Number(domainText);
+          const domainInvalid =
+            domainNum !== null && (!Number.isInteger(domainNum) || domainNum < 1);
+          const heldBy =
+            domainNum !== null && !domainInvalid
+              ? (domainInfo?.used.find((used) => used.domain === domainNum) ?? null)
+              : null;
+          const isServerDomain =
+            domainNum !== null && !domainInvalid && domainNum === domainInfo?.server_domain_id;
+          const blockedBy =
+            isServerDomain ? "the server" : heldBy ? heldBy.robot_id : null;
+          const approveBlocked =
+            !draft.name.trim() || approve.isPending || domainInvalid || blockedBy !== null;
+
           return (
             <li key={registration.mac_address} className="rounded-md border border-border p-3">
               <p className="font-mono text-xs">{registration.mac_address}</p>
@@ -326,6 +375,16 @@ function PendingPanel({
                   className="h-8"
                 />
                 <div className="flex gap-2">
+                  <Input
+                    aria-label={`ROS domain for ${registration.mac_address}`}
+                    placeholder={`Auto (next free: ${domainInfo?.next_domain_id ?? "…"})`}
+                    value={draft.domain}
+                    onChange={(event) =>
+                      patch(registration.mac_address, { domain: event.target.value })
+                    }
+                    inputMode="numeric"
+                    className={`h-8 w-28 ${blockedBy !== null || domainInvalid ? "border-destructive" : ""}`}
+                  />
                   <Select
                     value={draft.type}
                     onValueChange={(value) => patch(registration.mac_address, { type: value })}
@@ -347,7 +406,7 @@ function PendingPanel({
                   <Button
                     size="sm"
                     aria-label={`Approve ${registration.mac_address}`}
-                    disabled={!draft.name.trim() || approve.isPending}
+                    disabled={approveBlocked}
                     onClick={() =>
                       approve.mutate({
                         mac: registration.mac_address,
@@ -366,6 +425,19 @@ function PendingPanel({
                     <CircleSlash className="size-4" />
                   </Button>
                 </div>
+                {domainInvalid && (
+                  <p className="text-xs text-destructive">
+                    Domain must be a whole number from 1 to 232 (0 and the server domain are reserved).
+                  </p>
+                )}
+                {blockedBy !== null && !domainInvalid && (
+                  <p className="text-xs text-destructive">
+                    Domain {domainNum} is {blockedBy === "the server"
+                      ? "the server's own domain and cannot be assigned"
+                      : `already in use by robot '${blockedBy}'`}
+                    .
+                  </p>
+                )}
               </div>
             </li>
           );

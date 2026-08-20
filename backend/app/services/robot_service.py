@@ -7,6 +7,8 @@ definition of "what does this robot look like right now".
 
 from __future__ import annotations
 
+import base64
+import io
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.exceptions import NotFoundError, RobotNotConnectedError
@@ -14,6 +16,7 @@ from app.core.logging_config import get_logger
 from app.db.documents import RobotStatus
 from app.db.repositories import robots_repo
 from app.ros.manager import ros_manager
+from app.ros.map_publisher import occupancy_grid_to_image
 from app.ros.topics_registry import DEFAULT_ROBOT_TYPE, capabilities_for
 from app.services.telemetry_bus import telemetry_bus
 
@@ -46,7 +49,10 @@ async def connect(db, robot_id: str) -> Tuple[bool, str, Dict[str, Any]]:
     """Start the controller (and its domain bridge) using the stored identity."""
     robot = await get_robot(db, robot_id)
     ok, message = ros_manager.start_controller(
-        robot_id, robot_type_of(robot), robot.get("ros_domain_id")
+        robot_id,
+        robot_type_of(robot),
+        robot.get("ros_domain_id"),
+        share_map=bool(robot.get("map_share_enabled")),
     )
     robot = await robots_repo.upsert(
         db, robot_id, status=RobotStatus.online if ok else RobotStatus.error
@@ -58,6 +64,25 @@ async def disconnect(db, robot_id: str) -> Dict[str, Any]:
     ros_manager.stop_controller(robot_id)
     telemetry_bus.forget(robot_id)
     return await robots_repo.upsert(db, robot_id, status=RobotStatus.offline)
+
+
+async def set_map_share(db, robot_id: str, enabled: bool) -> Dict[str, Any]:
+    """Persist the map-share flag and apply it to the robot's bridge.
+
+    A connected robot gets its bridge regenerated and restarted so the DOWN
+    `/map` topic appears immediately; an offline robot only gets the YAML
+    rewritten so the new config is picked up on its next connect.
+    """
+    robot = await get_robot(db, robot_id)
+    await robots_repo.upsert(db, robot_id, map_share_enabled=bool(enabled))
+    robot_type = robot_type_of(robot)
+    domain = robot.get("ros_domain_id")
+    if ros_manager.get_controller(robot_id) is not None:
+        ros_manager.reconfigure_bridge(robot_id, robot_type, domain, share_map=bool(enabled))
+    else:
+        ros_manager.configure_bridge(robot_id, robot_type, domain, share_map=bool(enabled))
+    robot = await robots_repo.get(db, robot_id)
+    return view(robot)
 
 
 def live_snapshot(robot_id: str) -> Optional[Dict[str, Any]]:
@@ -72,6 +97,34 @@ def live_snapshot(robot_id: str) -> Optional[Dict[str, Any]]:
     return telemetry_bus.snapshot(robot_id)
 
 
+def latest_map(robot_id: str) -> Optional[Any]:
+    """The robot's latest OccupancyGrid, or None when offline / map unseen."""
+    controller = ros_manager.get_controller(robot_id)
+    if controller is None:
+        return None
+    try:
+        return controller.latest_map()
+    except AttributeError:  # pragma: no cover - controller without telemetry
+        return None
+
+
+def latest_map_image(robot_id: str) -> Optional[Dict[str, Any]]:
+    """Render the robot's OccupancyGrid as a base64 PNG + metadata."""
+    grid = latest_map(robot_id)
+    if grid is None:
+        return None
+    try:
+        image, metadata = occupancy_grid_to_image(grid)
+    except Exception:  # pragma: no cover - defensive against malformed grids
+        return None
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return {
+        "image": base64.b64encode(buffer.getvalue()).decode("ascii"),
+        "metadata": metadata,
+    }
+
+
 def view(robot: Dict[str, Any]) -> Dict[str, Any]:
     """Merge the stored document with live state — no database round trip."""
     robot_id = str(robot.get("robot_id") or "")
@@ -80,6 +133,7 @@ def view(robot: Dict[str, Any]) -> Dict[str, Any]:
         "connected": ros_manager.get_controller(robot_id) is not None,
         "live": live_snapshot(robot_id),
         "capabilities": capabilities_for(robot_type_of(robot)),
+        "map_available": latest_map(robot_id) is not None,
     }
 
 

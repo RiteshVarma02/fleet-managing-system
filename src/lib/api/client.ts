@@ -93,6 +93,33 @@ async function execute<T>(path: string, options: RequestOptions): Promise<T> {
   return payload as T;
 }
 
+/**
+ * Multipart POST (file uploads). FormData sets its own `Content-Type` with the
+ * boundary, so it must not be overridden by the JSON header logic above.
+ */
+async function uploadRequest<T>(path: string, formData: FormData): Promise<T> {
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers,
+    body: formData,
+  });
+
+  if (response.status === 401) {
+    onUnauthorized?.();
+    throw await parseError(response);
+  }
+  if (!response.ok) throw await parseError(response);
+
+  const payload = await response.json();
+  if (payload && typeof payload === "object" && "data" in payload) {
+    return payload.data as T;
+  }
+  return payload as T;
+}
+
 export function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const method = options.method ?? "GET";
   if (method !== "GET") return execute<T>(path, options);
@@ -113,4 +140,5 @@ export const api = {
   del: <T>(path: string) => apiRequest<T>(path, { method: "DELETE" }),
   raw: <T>(path: string, body?: unknown) =>
     apiRequest<T>(path, { method: body === undefined ? "GET" : "POST", body, raw: true }),
+  upload: <T>(path: string, formData: FormData) => uploadRequest<T>(path, formData),
 };

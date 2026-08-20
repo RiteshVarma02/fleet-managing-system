@@ -159,8 +159,15 @@ class RosManager:
         robot_id: str,
         robot_type: str = DEFAULT_ROBOT_TYPE,
         ros_domain_id: Optional[int] = None,
+        *,
+        share_map: bool = False,
     ) -> Tuple[bool, str]:
-        """Start the per-robot controller node and its domain bridge."""
+        """Start the per-robot controller node and its domain bridge.
+
+        `share_map` forwards the fleet's active `/map` down to the robot's Nav2;
+        it is threaded through to the bridge so a (re)connect honours the robot's
+        stored `map_share_enabled` flag instead of silently dropping the topic.
+        """
         with self._lock:
             if robot_id in self._controllers:
                 return True, "Already connected"
@@ -170,7 +177,9 @@ class RosManager:
             # The bridge must exist before the controller subscribes, otherwise
             # the first samples from the robot domain are dropped.
             try:
-                bridge = domain_bridge_manager.ensure(robot_id, robot_type, ros_domain_id)
+                bridge = domain_bridge_manager.ensure(
+                    robot_id, robot_type, ros_domain_id, share_map=share_map
+                )
                 logger.info("Bridge for %s: %s", robot_id, bridge)
             except Exception as exc:  # pragma: no cover - host dependent
                 logger.error("Domain bridge setup failed for %s: %s", robot_id, exc)
@@ -212,6 +221,32 @@ class RosManager:
 
     def bridge_status(self) -> List[Dict[str, Any]]:
         return domain_bridge_manager.status()
+
+    def configure_bridge(
+        self,
+        robot_id: str,
+        robot_type: str,
+        ros_domain_id: Optional[int],
+        *,
+        share_map: bool = False,
+    ) -> Any:
+        """Write a robot's bridge YAML without touching the running process."""
+        return domain_bridge_manager.configure(
+            robot_id, robot_type, ros_domain_id, share_map=share_map
+        )
+
+    def reconfigure_bridge(
+        self,
+        robot_id: str,
+        robot_type: str,
+        ros_domain_id: Optional[int],
+        *,
+        share_map: bool = False,
+    ) -> Dict[str, Any]:
+        """Regenerate a robot's bridge YAML and restart its bridge process."""
+        return domain_bridge_manager.reconfigure(
+            robot_id, robot_type, ros_domain_id, share_map=share_map
+        )
 
     # ------------------------------------------------------------------
     # shared publishers

@@ -20,7 +20,9 @@ import { api } from "@/lib/api/client";
 import {
   currentMapQuery,
   locationsQuery,
+  promoteRobotMap,
   queryKeys,
+  robotMapQuery,
   robotStatusQuery,
   robotsQuery,
   taskProgressQuery,
@@ -29,6 +31,15 @@ import {
 import { useFleetTelemetry } from "@/lib/api/telemetry";
 import { CapabilityPanel } from "@/components/fleet/CapabilityPanel";
 import { cn } from "@/lib/utils";
+import type { MapImage, MapMetadata } from "@/lib/api/types";
+
+const EMPTY_METADATA: MapMetadata = {
+  width: 0,
+  height: 0,
+  resolution: 0.05,
+  origin_x: 0,
+  origin_y: 0,
+};
 
 interface ConsoleSearch {
   robot?: string;
@@ -48,10 +59,14 @@ export const Route = createFileRoute("/_app/console")({
       { title: "Control Console — Robot Fleet Control" },
       {
         name: "description",
-        content: "Operator console: select a robot, drive it with the teleop joystick and dispatch pick and drop missions.",
+        content:
+          "Operator console: select a robot, drive it with the teleop joystick and dispatch pick and drop missions.",
       },
       { property: "og:title", content: "Control Console — Robot Fleet Control" },
-      { property: "og:description", content: "Teleoperate a robot and dispatch pick and drop missions." },
+      {
+        property: "og:description",
+        content: "Teleoperate a robot and dispatch pick and drop missions.",
+      },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
     ],
@@ -76,14 +91,31 @@ function ConsolePage() {
   const online = robot?.status === "online";
 
   const { data: telemetry } = useQuery(robotStatusQuery(selectedId, live && online));
-  const { data: tasks = [] } = useQuery({ ...tasksQuery(selectedId ?? undefined), enabled: Boolean(selectedId) });
+  const { data: robotMapData } = useQuery(robotMapQuery(selectedId, live));
+  const { data: tasks = [] } = useQuery({
+    ...tasksQuery(selectedId ?? undefined),
+    enabled: Boolean(selectedId),
+  });
+
+  const robotMap = robotMapData?.available ? robotMapData : null;
+  const displayMap: MapImage | null = robotMap
+    ? {
+        status: "success",
+        image: robotMap.image ?? "",
+        metadata: robotMap.metadata ?? EMPTY_METADATA,
+      }
+    : (map ?? null);
 
   const missionActive = Boolean(robot?.active_task_id);
   const { data: progress } = useQuery(taskProgressQuery(selectedId, missionActive));
 
   const setSearch = useCallback(
     (patch: Partial<ConsoleSearch>) => {
-      navigate({ to: "/console", search: (prev: ConsoleSearch) => ({ ...prev, ...patch }), replace: true });
+      navigate({
+        to: "/console",
+        search: (prev: ConsoleSearch) => ({ ...prev, ...patch }),
+        replace: true,
+      });
     },
     [navigate],
   );
@@ -102,7 +134,8 @@ function ConsolePage() {
   const invalidateRobots = () => queryClient.invalidateQueries({ queryKey: queryKeys.robots });
 
   const connection = useMutation({
-    mutationFn: (action: "connect" | "disconnect") => api.post(`/robots/${action}`, { robot_id: selectedId }),
+    mutationFn: (action: "connect" | "disconnect") =>
+      api.post(`/robots/${action}`, { robot_id: selectedId }),
     onSuccess: (_data, action) => {
       toast.success(`Robot ${action}ed`);
       invalidateRobots();
@@ -124,6 +157,16 @@ function ConsolePage() {
   const estop = useMutation({
     mutationFn: () => api.post("/robots/emergency-stop", { robot_id: selectedId }),
     onSuccess: () => toast.warning("Emergency stop sent"),
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  const promote = useMutation({
+    mutationFn: promoteRobotMap,
+    onSuccess: () => {
+      toast.success("Robot map promoted to fleet map");
+      queryClient.invalidateQueries({ queryKey: queryKeys.currentMap });
+      queryClient.invalidateQueries({ queryKey: queryKeys.maps });
+    },
     onError: (error: Error) => toast.error(error.message),
   });
 
@@ -156,10 +199,16 @@ function ConsolePage() {
       {/* Left: selection + mission */}
       <aside className="space-y-4">
         <div className="rounded-lg border border-border bg-card p-4">
-          <Label htmlFor="robot-select" className="text-xs uppercase tracking-wide text-muted-foreground">
+          <Label
+            htmlFor="robot-select"
+            className="text-xs uppercase tracking-wide text-muted-foreground"
+          >
             Active robot
           </Label>
-          <Select value={selectedId ?? undefined} onValueChange={(value) => setSearch({ robot: value })}>
+          <Select
+            value={selectedId ?? undefined}
+            onValueChange={(value) => setSearch({ robot: value })}
+          >
             <SelectTrigger id="robot-select" className="mt-2 w-full">
               <SelectValue placeholder="Select a robot" />
             </SelectTrigger>
@@ -174,11 +223,22 @@ function ConsolePage() {
 
           <div className="mt-3 flex gap-2">
             {online ? (
-              <Button variant="outline" size="sm" className="flex-1" disabled={!selectedId} onClick={() => connection.mutate("disconnect")}>
+              <Button
+                variant="outline"
+                size="sm"
+                className="flex-1"
+                disabled={!selectedId}
+                onClick={() => connection.mutate("disconnect")}
+              >
                 <PlugZap className="mr-1 size-4" /> Disconnect
               </Button>
             ) : (
-              <Button size="sm" className="flex-1" disabled={!selectedId} onClick={() => connection.mutate("connect")}>
+              <Button
+                size="sm"
+                className="flex-1"
+                disabled={!selectedId}
+                onClick={() => connection.mutate("connect")}
+              >
                 <Plug className="mr-1 size-4" /> Connect
               </Button>
             )}
@@ -186,7 +246,9 @@ function ConsolePage() {
         </div>
 
         <div className="rounded-lg border border-border bg-card p-4">
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">Pick &amp; drop</h2>
+          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+            Pick &amp; drop
+          </h2>
           <div className="space-y-3">
             <div>
               <Label className="text-xs text-muted-foreground">Pickup</Label>
@@ -227,7 +289,12 @@ function ConsolePage() {
               >
                 <Play className="mr-1 size-4" /> Start
               </Button>
-              <Button size="sm" variant="outline" disabled={!selectedId} onClick={() => stopMission.mutate()}>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!selectedId}
+                onClick={() => stopMission.mutate()}
+              >
                 <Square className="mr-1 size-4" /> Stop
               </Button>
             </div>
@@ -247,23 +314,47 @@ function ConsolePage() {
         )}
 
         <div className="rounded-lg border border-border bg-card p-4">
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">Task log</h2>
+          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+            Task log
+          </h2>
           <ul className="space-y-2 text-sm">
             {tasks.slice(0, 6).map((task) => (
               <li key={task.id} className="flex justify-between gap-2">
                 <span className="truncate">{task.type}</span>
-                <span className="shrink-0 text-xs uppercase text-muted-foreground">{task.status}</span>
+                <span className="shrink-0 text-xs uppercase text-muted-foreground">
+                  {task.status}
+                </span>
               </li>
             ))}
-            {tasks.length === 0 && <li className="text-muted-foreground">No tasks for this robot.</li>}
+            {tasks.length === 0 && (
+              <li className="text-muted-foreground">No tasks for this robot.</li>
+            )}
           </ul>
         </div>
       </aside>
 
       {/* Center: map */}
       <section className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+            {robotMap ? `${robot?.name ?? "Robot"}'s map` : "Fleet map"}
+          </h2>
+          <div className="flex items-center gap-2">
+            {selectedId && !robotMap && (
+              <span className="text-xs text-muted-foreground">No map yet for this robot</span>
+            )}
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!robotMap || promote.isPending}
+              onClick={() => promote.mutate({ robotId: selectedId })}
+            >
+              Use this robot&apos;s map as fleet map
+            </Button>
+          </div>
+        </div>
         <FleetMap
-          map={map}
+          map={displayMap}
           robots={mapRobots}
           locations={locations}
           selectedId={selectedId}

@@ -7,11 +7,15 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.schemas.robot import validate_robot_id
+
 SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_\-. ]{1,128}$")
 
 
-def validate_map_name(value: str) -> str:
+def validate_map_name(value: Optional[str]) -> Optional[str]:
     """Reject path traversal and separators — these names hit the filesystem."""
+    if value is None:
+        return None
     value = value.strip()
     if not SAFE_NAME_RE.match(value) or ".." in value:
         raise ValueError("map name may only contain letters, digits, space, '.', '-' and '_'")
@@ -34,6 +38,23 @@ class SaveMapCommand(BaseModel):
         return validate_map_name(value.removesuffix(".yaml").removesuffix(".pgm"))
 
 
+class SaveFromRobotCommand(BaseModel):
+    robot_id: str
+    filename: str = Field(min_length=1, max_length=128)
+
+    @field_validator("robot_id")
+    @classmethod
+    def _validate_robot(cls, value: str) -> str:
+        return validate_robot_id(value)
+
+    @field_validator("filename")
+    @classmethod
+    def _validate_filename(cls, value: str) -> str:
+        return validate_map_name(
+            value.removesuffix(".yaml").removesuffix(".pgm").removesuffix(".png")
+        )
+
+
 class MapMetadata(BaseModel):
     width: int
     height: int
@@ -42,10 +63,24 @@ class MapMetadata(BaseModel):
     origin_y: float
 
 
+class RobotMapResponse(BaseModel):
+    """A robot's own map — `available` is false until the grid is seen."""
+
+    available: bool = False
+    image: Optional[str] = None
+    metadata: Optional[MapMetadata] = None
+
+
 class MapImageResponse(BaseModel):
     status: str = "success"
     image: str
     metadata: MapMetadata
+
+
+class SavedMapResponse(MapImageResponse):
+    """The saved map set — image plus the normalized `.pgm`/`.yaml` base name."""
+
+    name: str
 
 
 class MapSummary(BaseModel):
@@ -53,6 +88,15 @@ class MapSummary(BaseModel):
     modified_at: str
     has_yaml: bool
     has_image: bool
+    active: bool = False
+
+
+class PromoteRobotMapCommand(BaseModel):
+    robot_id: str
+    map_name: Optional[str] = None
+
+    _v = field_validator("robot_id")(validate_robot_id)
+    _v_name = field_validator("map_name")(validate_map_name)
 
 
 class SlamCommand(BaseModel):

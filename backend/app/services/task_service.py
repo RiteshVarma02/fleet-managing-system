@@ -120,6 +120,8 @@ class TaskEngine:
             "leg": None,
             "completed_repeats": 0,
             "repeats": int(task.get("repeats") or 1),
+            "status": TaskStatus.running.value,
+            "message": "Execution started",
         }
         self._running[task_id] = asyncio.create_task(
             self._run(task_id, robot_id), name=f"task-{task_id}"
@@ -131,8 +133,6 @@ class TaskEngine:
         progress = self._progress.get(task_id) or {}
         robot_id = str(progress.get("robot_id") or "")
         if robot_id:
-            controller = robot_service.live_snapshot(robot_id) and None
-            del controller
             with contextlib.suppress(Exception):
                 robot_service.require_controller(robot_id).cancel_nav_goal()
         if task is not None:
@@ -176,6 +176,9 @@ class TaskEngine:
                         await self._drive_to(db, task_id, robot_id, leg)
                     await tasks_repo.increment_repeats(db, task_id)
                     self._progress.setdefault(task_id, {})["completed_repeats"] = cycle + 1
+                    self._progress.setdefault(task_id, {})["message"] = (
+                        f"Cycle {cycle + 1}/{repeats} done"
+                    )
                     await tasks_repo.append_history(
                         db, task_id, TaskStatus.running.value, f"Cycle {cycle + 1}/{repeats} done"
                     )
@@ -205,6 +208,10 @@ class TaskEngine:
             raise ValidationError(detail)
 
         self._progress.setdefault(task_id, {})["leg"] = location.get("name")
+        self._progress.setdefault(task_id, {})["status"] = TaskStatus.running.value
+        self._progress.setdefault(task_id, {})["message"] = (
+            f"Navigating to {location.get('name')}"
+        )
         await tasks_repo.append_history(
             db, task_id, TaskStatus.running.value, f"Navigating to {location.get('name')}"
         )

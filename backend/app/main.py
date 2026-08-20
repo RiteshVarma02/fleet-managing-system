@@ -61,6 +61,12 @@ async def lifespan(_: FastAPI):
 
     await task_engine.start()
 
+    # Best effort: restore the persisted active map and republish to ROS.
+    try:
+        await map_service.restore_active_map(db)
+    except Exception as exc:  # pragma: no cover - startup resilience
+        logger.warning("Active map restore failed: %s", exc)
+
     try:
         yield
     finally:

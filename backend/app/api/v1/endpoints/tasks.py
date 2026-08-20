@@ -3,6 +3,10 @@
 Execution is owned by `task_service.task_engine`: these routes only validate
 input, persist intent and hand off. Progress reads come from the engine's
 in-memory state, so polling a running task costs no database round trip.
+
+Route ordering matters: all static paths (`/pickdrop/*`, `/requests/*`) are
+declared before the `/{task_id}` dynamic routes so they are never swallowed by
+the parameterised patterns (Starlette resolves routes in declaration order).
 """
 
 from __future__ import annotations
@@ -73,72 +77,8 @@ async def create_task(
     return DataResponse(data=TaskOut.from_document(task))
 
 
-@router.get("/{task_id}", response_model=DataResponse[TaskOut])
-async def get_task(
-    task_id: str,
-    db: AsyncIOMotorDatabase = Depends(get_db),
-    _: Principal = Depends(get_current_user),
-):
-    task = await tasks_repo.get(db, task_id)
-    if task is None:
-        raise NotFoundError(f"Task '{task_id}' not found")
-    return DataResponse(data=TaskOut.from_document(task))
-
-
-@router.patch("/{task_id}", response_model=DataResponse[TaskOut])
-async def update_task(
-    task_id: str,
-    body: TaskUpdate,
-    db: AsyncIOMotorDatabase = Depends(get_db),
-    _: Principal = Depends(require_operator),
-):
-    task = await tasks_repo.set_status(db, task_id, body.status, message=body.message)
-    if task is None:
-        raise NotFoundError(f"Task '{task_id}' not found")
-    return DataResponse(data=TaskOut.from_document(task))
-
-
-@router.get("/{task_id}/history", response_model=DataResponse[List[TaskHistoryOut]])
-async def task_history(
-    task_id: str,
-    db: AsyncIOMotorDatabase = Depends(get_db),
-    _: Principal = Depends(get_current_user),
-):
-    rows = await tasks_repo.history(db, task_id)
-    return DataResponse(data=[TaskHistoryOut.model_validate(row) for row in rows])
-
-
 # --------------------------------------------------------------------------
-# Execution lifecycle
-# --------------------------------------------------------------------------
-@router.post("/{task_id}/start", response_model=DataResponse[dict])
-async def start_task(
-    task_id: str,
-    db: AsyncIOMotorDatabase = Depends(get_db),
-    _: Principal = Depends(require_operator),
-):
-    task = await task_engine.start_task(db, task_id)
-    return DataResponse(data=_with_progress(task))
-
-
-@router.post("/{task_id}/cancel", response_model=StatusResponse)
-async def cancel_task(
-    task_id: str,
-    db: AsyncIOMotorDatabase = Depends(get_db),
-    _: Principal = Depends(require_operator),
-):
-    await task_engine.cancel_task(db, task_id)
-    return StatusResponse(message=f"Task {task_id} cancelled")
-
-
-@router.get("/{task_id}/progress", response_model=DataResponse[Optional[dict]])
-def task_progress(task_id: str, _: Principal = Depends(get_current_user)):
-    """In-memory read — safe to poll from the operator console."""
-    return DataResponse(data=task_engine.progress(task_id))
-
-
-# --------------------------------------------------------------------------
-# Pick & drop
+# Pick & drop — static paths MUST come before the /{task_id} dynamic routes.
 # --------------------------------------------------------------------------
 @router.post("/pickdrop/start", response_model=DataResponse[dict], status_code=201)
 async def start_pickdrop(
@@ -203,3 +143,70 @@ async def unassigned_requests(
 ):
     rows = await pending_requests_repo.list_requests(db, status=pending_requests_repo.PENDING)
     return DataResponse(data=[TaskRequestOut.from_document(row) for row in rows])
+
+
+# --------------------------------------------------------------------------
+# Task detail
+# --------------------------------------------------------------------------
+@router.get("/{task_id}", response_model=DataResponse[TaskOut])
+async def get_task(
+    task_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    _: Principal = Depends(get_current_user),
+):
+    task = await tasks_repo.get(db, task_id)
+    if task is None:
+        raise NotFoundError(f"Task '{task_id}' not found")
+    return DataResponse(data=TaskOut.from_document(task))
+
+
+@router.patch("/{task_id}", response_model=DataResponse[TaskOut])
+async def update_task(
+    task_id: str,
+    body: TaskUpdate,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    _: Principal = Depends(require_operator),
+):
+    task = await tasks_repo.set_status(db, task_id, body.status, message=body.message)
+    if task is None:
+        raise NotFoundError(f"Task '{task_id}' not found")
+    return DataResponse(data=TaskOut.from_document(task))
+
+
+@router.get("/{task_id}/history", response_model=DataResponse[List[TaskHistoryOut]])
+async def task_history(
+    task_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    _: Principal = Depends(get_current_user),
+):
+    rows = await tasks_repo.history(db, task_id)
+    return DataResponse(data=[TaskHistoryOut.model_validate(row) for row in rows])
+
+
+# --------------------------------------------------------------------------
+# Execution lifecycle
+# --------------------------------------------------------------------------
+@router.post("/{task_id}/start", response_model=DataResponse[dict])
+async def start_task(
+    task_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    _: Principal = Depends(require_operator),
+):
+    task = await task_engine.start_task(db, task_id)
+    return DataResponse(data=_with_progress(task))
+
+
+@router.post("/{task_id}/cancel", response_model=StatusResponse)
+async def cancel_task(
+    task_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    _: Principal = Depends(require_operator),
+):
+    await task_engine.cancel_task(db, task_id)
+    return StatusResponse(message=f"Task {task_id} cancelled")
+
+
+@router.get("/{task_id}/progress", response_model=DataResponse[Optional[dict]])
+def task_progress(task_id: str, _: Principal = Depends(get_current_user)):
+    """In-memory read — safe to poll from the operator console."""
+    return DataResponse(data=task_engine.progress(task_id))

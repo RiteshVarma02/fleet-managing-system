@@ -29,6 +29,7 @@ DEFAULTS: Dict[str, Any] = {
     "ip_address": None,
     "ros_domain_id": None,
     "approved": False,
+    "map_share_enabled": False,
     "active_map_id": None,
     "is_deleted": False,
 }

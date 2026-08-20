@@ -139,6 +139,7 @@ class TelemetryBus:
                             "battery": snap.get("battery"),
                             "status": snap.get("status"),
                             "nav": snap.get("nav"),
+                            "at": snap.get("at"),
                         }
                         for snap in self.fleet_snapshot()
                     ],

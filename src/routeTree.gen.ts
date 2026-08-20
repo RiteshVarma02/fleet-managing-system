@@ -14,6 +14,7 @@ import { Route as AppRouteImport } from './routes/_app'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as AppConsoleRouteImport } from './routes/_app.console'
 import { Route as AppFleetRouteImport } from './routes/_app.fleet'
+import { Route as AppMapsRouteImport } from './routes/_app.maps'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -39,18 +40,25 @@ const AppFleetRoute = AppFleetRouteImport.update({
   path: '/fleet',
   getParentRoute: () => AppRoute,
 } as any)
+const AppMapsRoute = AppMapsRouteImport.update({
+  id: '/maps',
+  path: '/maps',
+  getParentRoute: () => AppRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/console': typeof AppConsoleRoute
   '/fleet': typeof AppFleetRoute
+  '/maps': typeof AppMapsRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/console': typeof AppConsoleRoute
   '/fleet': typeof AppFleetRoute
+  '/maps': typeof AppMapsRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -59,13 +67,21 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/_app/console': typeof AppConsoleRoute
   '/_app/fleet': typeof AppFleetRoute
+  '/_app/maps': typeof AppMapsRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/login' | '/console' | '/fleet'
+  fullPaths: '/' | '/login' | '/console' | '/fleet' | '/maps'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/login' | '/console' | '/fleet'
-  id: '__root__' | '/' | '/_app' | '/login' | '/_app/console' | '/_app/fleet'
+  to: '/' | '/login' | '/console' | '/fleet' | '/maps'
+  id:
+    | '__root__'
+    | '/'
+    | '/_app'
+    | '/login'
+    | '/_app/console'
+    | '/_app/fleet'
+    | '/_app/maps'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -111,17 +127,26 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppFleetRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/maps': {
+      id: '/_app/maps'
+      path: '/maps'
+      fullPath: '/maps'
+      preLoaderRoute: typeof AppMapsRouteImport
+      parentRoute: typeof AppRoute
+    }
   }
 }
 
 interface AppRouteChildren {
   AppConsoleRoute: typeof AppConsoleRoute
   AppFleetRoute: typeof AppFleetRoute
+  AppMapsRoute: typeof AppMapsRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
   AppConsoleRoute: AppConsoleRoute,
   AppFleetRoute: AppFleetRoute,
+  AppMapsRoute: AppMapsRoute,
 }
 
 const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)

@@ -7,7 +7,7 @@ from typing import List
 from fastapi import APIRouter, Depends
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from app.api.deps import Principal, get_current_user, get_db
+from app.api.deps import Principal, get_current_user, get_db, require_operator
 from app.core.exceptions import ConflictError, NotFoundError
 from app.db.repositories import locations_repo as location_repo
 from app.schemas.common import DataResponse, StatusResponse
@@ -30,7 +30,7 @@ async def list_locations(
 async def create_location(
     body: LocationCreate,
     db: AsyncIOMotorDatabase = Depends(get_db),
-    _: Principal = Depends(get_current_user),
+    _: Principal = Depends(require_operator),
 ):
     existing = await location_repo.list_all(db, map_name=body.map_name)
     if any(str(item.get("name")).strip().lower() == body.name.strip().lower() for item in existing):
@@ -47,7 +47,7 @@ async def create_location(
 async def delete_location(
     location_id: str,
     db: AsyncIOMotorDatabase = Depends(get_db),
-    _: Principal = Depends(get_current_user),
+    _: Principal = Depends(require_operator),
 ):
     if not await location_repo.delete(db, location_id):
         raise NotFoundError(f"Location '{location_id}' not found")

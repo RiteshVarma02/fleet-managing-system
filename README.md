@@ -41,7 +41,8 @@ src/
   lib/auth.tsx           JWT session, role routing, 401 handling
   components/fleet/      FleetMap (canvas occupancy grid), Joystick,
                          RobotCard, CapabilityPanel
-  routes/                login, _app layout (E-stop + health), fleet, console
+  routes/                login, _app layout (E-stop + health), fleet, console,
+                         maps (upload/activate, build from a robot, map sharing)
 ```
 
 ### Keeping backend load low
@@ -61,3 +62,25 @@ src/
 - **Capability-driven UI:** each robot reports its capabilities, so fork and
   gripper controls only appear for robots that have them — adding a robot type
   server-side needs no frontend change.
+
+## Facility maps
+
+The Maps page (`/maps`) is the single place to manage the fleet's facility map:
+
+- **Upload & activate** — upload a PNG/PGM/JPG that becomes the active fleet
+  map, published on the server domain's `/map`.
+- **Build from a robot** — pick a robot, *Start SLAM*, watch its grid grow live
+  (polled every 2s), then *Save map* (`.pgm`+`.yaml`+`.png` written straight
+  from the captured grid — no `map_saver_cli`) and *Activate* it fleet-wide.
+- **Use a robot's map** — on the console, promote a robot's own map to the
+  fleet map without saving it first.
+- **Send the map to robots** — toggle *map sharing* per robot: the server's
+  `/map` is bridged down to the robot's domain (`map_share_enabled`) so its
+  Nav2 can consume the static map.
+
+## Testing
+
+- **Backend:** `cd backend && python -m pytest` — grid↔image round-trip,
+  ROS-domain assignment and domain-bridge config (with/without map-share).
+  Test dependencies live in `backend/requirements-dev.txt`.
+- **Frontend:** `npm run typecheck` (`tsgo --noEmit`) and `npm run lint`.
