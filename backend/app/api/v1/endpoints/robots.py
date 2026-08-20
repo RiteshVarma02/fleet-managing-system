@@ -87,6 +87,27 @@ def bridges(_: Principal = Depends(get_current_user)):
     )
 
 
+@router.get("/domains/next", response_model=DataResponse[dict])
+async def next_free_domain(
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    _: Principal = Depends(get_current_user),
+):
+    """Next free ROS domain plus the domains currently held by live robots."""
+    used = await robots_repo.used_domains(db)
+    next_id = await robots_repo.next_domain_id(
+        db,
+        start=settings.domain_bridge_default_robot_domain,
+        reserved=[settings.ros_domain_id],
+    )
+    return DataResponse(
+        data={
+            "next_domain_id": next_id,
+            "server_domain_id": settings.ros_domain_id,
+            "used": used,
+        }
+    )
+
+
 # --------------------------------------------------------------------------
 # Fleet
 # --------------------------------------------------------------------------
@@ -308,8 +329,23 @@ async def approve(
     domain_id: Optional[int] = body.ros_domain_id
     if existing_by_mac is None and domain_id is None:
         domain_id = await robots_repo.next_domain_id(
-            db, start=settings.domain_bridge_default_robot_domain
+            db,
+            start=settings.domain_bridge_default_robot_domain,
+            reserved=[settings.ros_domain_id],
         )
+
+    if domain_id is not None:
+        if domain_id <= 0:
+            raise ValidationError("ROS_DOMAIN_ID must be 1-232 (domain 0 is reserved)")
+        if domain_id == settings.ros_domain_id:
+            raise ConflictError(
+                f"ROS_DOMAIN_ID {domain_id} is the server's own domain and cannot be assigned to a robot"
+            )
+        for row in await robots_repo.used_domains(db):
+            if row["domain"] == domain_id and row["robot_id"] != resolved_id:
+                raise ConflictError(
+                    f"ROS_DOMAIN_ID {domain_id} is already in use by robot '{row['robot_id']}'"
+                )
 
     await robots_repo.upsert(
         db,
