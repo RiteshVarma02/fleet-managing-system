@@ -37,12 +37,20 @@ class _CancelledByOperator(Exception):
     pass
 
 
+class _TaskPaused(Exception):
+    """Raised inside a leg when the operator pauses the task mid-navigation."""
+
+
 class TaskEngine:
     def __init__(self) -> None:
         self._running: Dict[str, asyncio.Task] = {}
         self._progress: Dict[str, Dict[str, Any]] = {}
         self._scheduler: Optional[asyncio.Task] = None
         self._semaphore = asyncio.Semaphore(settings.task_max_concurrent)
+        # Pause support: the flag is checked inside the nav poll loop, the
+        # event blocks `_run` until the operator resumes (or cancels).
+        self._pause_flags: Dict[str, bool] = {}
+        self._resume_events: Dict[str, asyncio.Event] = {}
 
     # ------------------------------------------------------------------
     # lifecycle
@@ -85,6 +93,15 @@ class TaskEngine:
                 return task_id
         return None
 
+    def paused_task_id(self, robot_id: str) -> Optional[str]:
+        for task_id, progress in self._progress.items():
+            if (
+                progress.get("robot_id") == robot_id
+                and progress.get("status") == TaskStatus.paused.value
+            ):
+                return task_id
+        return None
+
     def progress(self, task_id: str) -> Optional[Dict[str, Any]]:
         return dict(self._progress[task_id]) if task_id in self._progress else None
 
@@ -123,12 +140,18 @@ class TaskEngine:
             "status": TaskStatus.running.value,
             "message": "Execution started",
         }
+        self._pause_flags.pop(task_id, None)
+        self._resume_events[task_id] = asyncio.Event()
         self._running[task_id] = asyncio.create_task(
             self._run(task_id, robot_id), name=f"task-{task_id}"
         )
         return task or {}
 
     async def cancel_task(self, db, task_id: str) -> None:
+        self._pause_flags.pop(task_id, None)
+        event = self._resume_events.get(task_id)
+        if event is not None:
+            event.set()  # unblock a paused `_run` so cancellation is immediate
         task = self._running.pop(task_id, None)
         progress = self._progress.get(task_id) or {}
         robot_id = str(progress.get("robot_id") or "")
@@ -140,6 +163,54 @@ class TaskEngine:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
         await self._finish(db, task_id, robot_id, TaskStatus.cancelled, "Cancelled by operator")
+
+    async def pause_task(self, db, task_id: str) -> Dict[str, Any]:
+        """Stop the robot mid-leg (Nav2 action cancelled) but keep the task.
+
+        The engine re-issues the same goal on `resume_task`, so no mission
+        progress is lost — Nav2 has no native pause for NavigateToPose.
+        """
+        if not self.is_running(task_id):
+            raise ConflictError("Task is not running", code="task_not_running")
+        if self._pause_flags.get(task_id):
+            raise ConflictError("Task is already paused", code="task_already_paused")
+
+        progress = self._progress.get(task_id) or {}
+        robot_id = str(progress.get("robot_id") or "")
+        # Flag first: the poll loop must see paused before it can observe the
+        # transient CANCELLED state that pausing produces.
+        self._pause_flags[task_id] = True
+        controller = robot_service.require_controller(robot_id, "navigation")
+        ok, detail = controller.pause_nav_goal()
+        if not ok:
+            self._pause_flags.pop(task_id, None)
+            raise ValidationError(detail)
+
+        return dict(self._progress.get(task_id) or {})
+
+    async def resume_task(self, db, task_id: str) -> Dict[str, Any]:
+        """Re-issue the interrupted goal and continue the remaining legs."""
+        was_paused = self._pause_flags.pop(task_id, False)
+        if not was_paused:
+            if self.is_running(task_id):
+                raise ConflictError("Task is not paused", code="task_not_paused")
+            raise ConflictError("Task is not running", code="task_not_running")
+
+        progress = self._progress.get(task_id) or {}
+        robot_id = str(progress.get("robot_id") or "")
+
+        await tasks_repo.set_status(db, task_id, TaskStatus.running, message="Resumed")
+        current = self._progress.get(task_id)
+        if current is not None:
+            current["status"] = TaskStatus.running.value
+            current["message"] = f"Resuming {current.get('leg') or 'current leg'}"
+
+        # Unblocks `_wait_while_paused`; `_run` then retries the same leg,
+        # which publishes a fresh goal_request to the robot.
+        event = self._resume_events.get(task_id)
+        if event is not None:
+            event.set()
+        return dict(self._progress.get(task_id) or {})
 
     # ------------------------------------------------------------------
     # execution
@@ -172,8 +243,16 @@ class TaskEngine:
                 repeats = min(repeats, settings.max_task_repeats)
 
                 for cycle in range(repeats):
-                    for leg in legs:
-                        await self._drive_to(db, task_id, robot_id, leg)
+                    leg_index = 0
+                    while leg_index < len(legs):
+                        try:
+                            await self._drive_to(db, task_id, robot_id, legs[leg_index])
+                        except _TaskPaused:
+                            # Robot is stopped (Nav2 goal cancelled). Block here
+                            # until resume/cancel; then retry the same leg.
+                            await self._wait_while_paused(db, task_id)
+                            continue
+                        leg_index += 1
                     await tasks_repo.increment_repeats(db, task_id)
                     self._progress.setdefault(task_id, {})["completed_repeats"] = cycle + 1
                     self._progress.setdefault(task_id, {})["message"] = (
@@ -196,6 +275,19 @@ class TaskEngine:
             self._running.pop(task_id, None)
             with contextlib.suppress(Exception):
                 await self._finish(db, task_id, robot_id, status, message)
+
+    async def _wait_while_paused(self, db, task_id: str) -> None:
+        """Persist the paused state and block until `resume_task` fires."""
+        await tasks_repo.set_status(db, task_id, TaskStatus.paused, message="Paused by operator")
+        progress = self._progress.get(task_id)
+        if progress is not None:
+            progress["status"] = TaskStatus.paused.value
+            progress["message"] = "Paused by operator"
+        event = self._resume_events.get(task_id)
+        if event is not None:
+            # Cancel during pause raises CancelledError here, which `_run`
+            # already maps to a cancelled finish.
+            await event.wait()
 
     async def _drive_to(self, db, task_id: str, robot_id: str, location: Dict[str, Any]) -> None:
         controller = robot_service.require_controller(robot_id, "navigation")
@@ -221,6 +313,8 @@ class TaskEngine:
         while waited < settings.nav_goal_timeout_seconds:
             await asyncio.sleep(poll)
             waited += poll
+            if self._pause_flags.get(task_id):
+                raise _TaskPaused()
             if ros_state := controller.get_nav_status().get("status"):
                 if ros_state in TERMINAL_NAV_STATES:
                     if ros_state == NAV_SUCCEEDED:
@@ -235,6 +329,8 @@ class TaskEngine:
         self, db, task_id: str, robot_id: str, status: TaskStatus, message: str
     ) -> None:
         self._progress.pop(task_id, None)
+        self._pause_flags.pop(task_id, None)
+        self._resume_events.pop(task_id, None)
         current = await tasks_repo.get(db, task_id)
         if current is not None and str(current.get("status")) not in {
             TaskStatus.completed.value,

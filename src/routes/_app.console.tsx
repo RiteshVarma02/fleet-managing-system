@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
-import { OctagonX, Play, Plug, PlugZap, Square } from "lucide-react";
+import { OctagonX, Pause, Play, Plug, PlugZap, Square } from "lucide-react";
 import { toast } from "sonner";
 
 import { FleetMap } from "@/components/fleet/FleetMap";
@@ -194,6 +194,18 @@ function ConsolePage() {
     onError: (error: Error) => toast.error(error.message),
   });
 
+  const pauseMission = useMutation({
+    mutationFn: (paused: boolean) =>
+      api.post(paused ? "/tasks/pickdrop/resume" : "/tasks/pickdrop/pause", {
+        robot_id: selectedId,
+      }),
+    onSuccess: (_data, paused) => {
+      toast.success(paused ? "Mission resumed" : "Mission paused");
+      queryClient.invalidateQueries({ queryKey: queryKeys.tasks(selectedId ?? undefined) });
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
   return (
     <div className="mx-auto grid w-full max-w-[1600px] gap-4 p-4 xl:grid-cols-[300px_minmax(0,1fr)_300px]">
       {/* Left: selection + mission */}
@@ -288,6 +300,22 @@ function ConsolePage() {
                 onClick={() => startMission.mutate()}
               >
                 <Play className="mr-1 size-4" /> Start
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!selectedId || pauseMission.isPending}
+                onClick={() => pauseMission.mutate(progress?.status !== "paused")}
+              >
+                {progress?.status === "paused" ? (
+                  <>
+                    <Play className="mr-1 size-4" /> Resume
+                  </>
+                ) : (
+                  <>
+                    <Pause className="mr-1 size-4" /> Pause
+                  </>
+                )}
               </Button>
               <Button
                 size="sm"

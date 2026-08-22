@@ -282,6 +282,26 @@ def cancel_goal(body: RobotIdBody, _: Principal = Depends(require_operator)):
     return StatusResponse(message="Goal cancelled")
 
 
+@router.post("/goal/pause", response_model=DataResponse[dict])
+def pause_goal(body: RobotIdBody, _: Principal = Depends(require_operator)):
+    """Cancel the active Nav2 action (robot stops) but remember the goal."""
+    controller = robot_service.require_controller(body.robot_id, "navigation")
+    ok, detail = controller.pause_nav_goal()
+    if not ok:
+        raise ValidationError(detail)
+    return DataResponse(data={"message": detail, "nav": controller.get_nav_status()})
+
+
+@router.post("/goal/resume", response_model=DataResponse[dict])
+def resume_goal(body: RobotIdBody, _: Principal = Depends(require_operator)):
+    """Re-issue the last paused goal so the robot continues navigating."""
+    controller = robot_service.require_controller(body.robot_id, "navigation")
+    ok, detail = controller.resume_nav_goal()
+    if not ok:
+        raise ValidationError(detail)
+    return DataResponse(data={"message": detail, "nav": controller.get_nav_status()})
+
+
 @router.post("/initial-pose", response_model=StatusResponse)
 def initial_pose(body: PoseCommand, _: Principal = Depends(require_operator)):
     robot_service.require_controller(body.robot_id, "navigation").set_initial_pose(

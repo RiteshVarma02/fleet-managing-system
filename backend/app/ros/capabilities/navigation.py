@@ -25,6 +25,7 @@ NAV_SUCCEEDED = "succeeded"
 NAV_FAILED = "failed"
 NAV_REJECTED = "rejected"
 NAV_CANCELLED = "cancelled"
+NAV_PAUSED = "paused"
 
 TERMINAL_NAV_STATES = {NAV_SUCCEEDED, NAV_FAILED, NAV_REJECTED, NAV_CANCELLED}
 
@@ -62,6 +63,10 @@ class NavigationCapability:
             "message": None,
             "updated_at": time.time(),
         }
+        # Last commanded goal, kept so a paused goal can be re-sent on resume.
+        # Nav2 has no native pause for NavigateToPose — the industry pattern is
+        # cancel-then-reissue, which this capability implements.
+        self._last_goal: Optional[Dict[str, float]] = None
 
     # ---------------- state ----------------
     def _set_nav_state(self, **fields: Any) -> None:
@@ -100,10 +105,14 @@ class NavigationCapability:
         msg.pose.orientation.z = qz
         msg.pose.orientation.w = qw
 
+        goal = {"x": float(x), "y": float(y), "theta": float(theta)}
+        with self._state_lock:
+            self._last_goal = dict(goal)
+
         self._nav_done.clear()
         self._set_nav_state(
             status=NAV_SENDING,
-            goal={"x": float(x), "y": float(y), "theta": float(theta)},
+            goal=goal,
             message="Goal published",
         )
         self._goal_pub.publish(msg)
@@ -116,6 +125,41 @@ class NavigationCapability:
             msg.data = True
             self._goal_cancel_pub.publish(msg)
         self._set_nav_state(status=NAV_CANCELLED, message="Cancelled by operator")
+
+    def pause_nav_goal(self) -> Tuple[bool, str]:
+        """Cancel the active goal but remember it so `resume_nav_goal()` can re-send it.
+
+        Nav2 has no native NavigateToPose pause; the standard approach is to
+        cancel the action (the robot stops immediately) and re-issue the same
+        goal on resume.
+        """
+        if self._goal_cancel_pub is None:
+            return False, "Robot type has no navigation goal topic"
+        current = self.get_nav_status().get("goal")
+        if current and self.get_nav_status().get("status") not in TERMINAL_NAV_STATES:
+            with self._state_lock:
+                self._last_goal = {
+                    "x": float(current["x"]),
+                    "y": float(current["y"]),
+                    "theta": float(current.get("theta", 0.0)),
+                }
+        self.cancel_nav_goal()
+        # Override the terminal CANCELLED state: paused is recoverable.
+        self._set_nav_state(status=NAV_PAUSED, message="Paused by operator")
+        logger.info("%s nav paused", self.robot_id)
+        return True, "Goal paused"
+
+    def resume_nav_goal(self) -> Tuple[bool, str]:
+        """Re-send the last paused goal (no-op when nothing is paused)."""
+        with self._state_lock:
+            goal = dict(self._last_goal) if self._last_goal else None
+        if goal is None:
+            return False, "No paused goal to resume"
+        ok, detail = self.send_nav2_goal(goal["x"], goal["y"], goal.get("theta", 0.0))
+        if ok:
+            with self._state_lock:
+                self._last_goal = None
+        return ok, detail
 
     def wait_for_nav_done(self, timeout: float) -> Optional[str]:
         """Block until a terminal nav state arrives. `None` on timeout."""

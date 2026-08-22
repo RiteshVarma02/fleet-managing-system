@@ -76,7 +76,7 @@ export function CapabilityPanel({
               </div>
             ))}
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button
               size="sm"
               className="flex-1"
@@ -90,6 +90,22 @@ export function CapabilityPanel({
               }
             >
               Send goal
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={blocked}
+              onClick={() => send("/robots/goal/pause")}
+            >
+              Pause
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={blocked}
+              onClick={() => send("/robots/goal/resume")}
+            >
+              Resume
             </Button>
             <Button
               size="sm"

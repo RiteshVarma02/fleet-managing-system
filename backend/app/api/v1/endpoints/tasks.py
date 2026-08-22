@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, Query
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.api.deps import Principal, get_current_user, get_db, require_operator
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import ConflictError, NotFoundError
 from app.db.documents import TaskStatus
 from app.db.repositories import pending_requests_repo, tasks_repo
 from app.schemas.common import DataResponse, StatusResponse
@@ -108,6 +108,34 @@ async def stop_pickdrop(
         return StatusResponse(message=f"No task running for {body.robot_id}")
     await task_engine.cancel_task(db, task_id)
     return StatusResponse(message=f"Task {task_id} cancelled")
+
+
+@router.post("/pickdrop/pause", response_model=StatusResponse)
+async def pause_pickdrop(
+    body: RobotIdBody,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    _: Principal = Depends(require_operator),
+):
+    """Stop the robot mid-mission; the task stays alive and can be resumed."""
+    task_id = task_engine.running_task_id(body.robot_id)
+    if task_id is None:
+        raise ConflictError(f"No running task for {body.robot_id}", code="task_not_running")
+    await task_engine.pause_task(db, task_id)
+    return StatusResponse(message=f"Task {task_id} paused")
+
+
+@router.post("/pickdrop/resume", response_model=StatusResponse)
+async def resume_pickdrop(
+    body: RobotIdBody,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    _: Principal = Depends(require_operator),
+):
+    """Re-issue the interrupted goal and continue the mission."""
+    task_id = task_engine.paused_task_id(body.robot_id)
+    if task_id is None:
+        raise ConflictError(f"No paused task for {body.robot_id}", code="task_not_paused")
+    await task_engine.resume_task(db, task_id)
+    return StatusResponse(message=f"Task {task_id} resumed")
 
 
 @router.get("/pickdrop/{robot_id}/status", response_model=DataResponse[Optional[dict]])
@@ -204,6 +232,28 @@ async def cancel_task(
 ):
     await task_engine.cancel_task(db, task_id)
     return StatusResponse(message=f"Task {task_id} cancelled")
+
+
+@router.post("/{task_id}/pause", response_model=DataResponse[Optional[dict]])
+async def pause_task(
+    task_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    _: Principal = Depends(require_operator),
+):
+    """Stop the robot mid-leg (Nav2 action cancelled); resume re-issues the goal."""
+    progress = await task_engine.pause_task(db, task_id)
+    return DataResponse(data=progress)
+
+
+@router.post("/{task_id}/resume", response_model=DataResponse[Optional[dict]])
+async def resume_task(
+    task_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    _: Principal = Depends(require_operator),
+):
+    """Re-issue the paused goal and continue the remaining legs."""
+    progress = await task_engine.resume_task(db, task_id)
+    return DataResponse(data=progress)
 
 
 @router.get("/{task_id}/progress", response_model=DataResponse[Optional[dict]])

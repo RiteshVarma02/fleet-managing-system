@@ -17,7 +17,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from nav2_msgs.action import NavigateToPose
 from geometry_msgs.msg import PoseStamped
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 import os
 import time
 
@@ -27,7 +27,8 @@ class RobotActionForwarder(Node):
         robot_id="robot_1",
         robot_domain=2,
         goal_topic="/goal_request",
-        status_topic="/navigation_status"
+        status_topic="/navigation_status",
+        cancel_topic="/goal_cancel"
     ):
         super().__init__('robot_action_forwarder')
         
@@ -58,6 +59,18 @@ class RobotActionForwarder(Node):
             10,
             callback_group=self.callback_group
         )
+
+        # Topic subscriber for cancel requests from server.
+        # The server publishes Bool(True) on /robot_X/goal_cancel which the
+        # domain bridge remaps to /goal_cancel here. Without this subscription
+        # operator cancels never reach Nav2 and the robot keeps driving.
+        self.cancel_sub = self.create_subscription(
+            Bool,
+            cancel_topic,
+            self.cancel_callback,
+            10,
+            callback_group=self.callback_group
+        )
         
         # Topic publisher for feedback/results
         # Note: domain_bridge should remap /navigation_status -> /robot_X/navigation_status on server domain
@@ -85,6 +98,34 @@ class RobotActionForwarder(Node):
         status_msg.data = msg_data
         self.status_pub.publish(status_msg)
         self.get_logger().info(f'📤 STATUS: {msg_data}')
+
+    def cancel_callback(self, msg: Bool):
+        """Cancel the active NavigateToPose goal (server-driven pause/cancel)."""
+        if not msg.data:
+            return
+        if self.current_goal_handle is None:
+            self.get_logger().info('📥 CANCEL received but no active goal')
+            return
+        self.get_logger().info('📥 CANCEL received — cancelling active Nav2 goal')
+        self._publish_status('CANCELLING', 'Cancel requested by operator')
+        try:
+            cancel_future = self.current_goal_handle.cancel_goal_async()
+            # The result callback publishes the terminal CANCELLED status once
+            # Nav2 confirms; do not block this callback on it.
+            cancel_future.add_done_callback(self._cancel_response_callback)
+        except Exception as e:
+            self.get_logger().error(f'✗ Cancel failed: {e}')
+            self._publish_status('FAILED', f'Cancel failed: {str(e)[:50]}')
+
+    def _cancel_response_callback(self, future):
+        try:
+            response = future.result()
+            accepted = getattr(response, 'return_code', None) == 0
+            self.get_logger().info(
+                f'✓ Cancel request {"accepted" if accepted else "rejected"} by nav2'
+            )
+        except Exception as e:
+            self.get_logger().error(f'✗ Cancel response error: {e}')
 
     def goal_callback(self, msg: PoseStamped):
         """Callback when server sends a goal via topic"""
@@ -210,6 +251,7 @@ def main(args=None):
     robot_domain = int(os.getenv('ROS_DOMAIN_ID', '3'))
     goal_topic = os.getenv('FORWARDER_GOAL_TOPIC', '/goal_request')
     status_topic = os.getenv('FORWARDER_STATUS_TOPIC', '/navigation_status')
+    cancel_topic = os.getenv('FORWARDER_CANCEL_TOPIC', '/goal_cancel')
     
     rclpy.init(args=args)
     
@@ -217,7 +259,8 @@ def main(args=None):
         robot_id=robot_id,
         robot_domain=robot_domain,
         goal_topic=goal_topic,
-        status_topic=status_topic
+        status_topic=status_topic,
+        cancel_topic=cancel_topic
     )
     
     executor = MultiThreadedExecutor()

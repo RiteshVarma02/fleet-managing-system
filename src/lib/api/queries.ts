@@ -201,6 +201,26 @@ export const saveFromRobot = ({ robotId, filename }: { robotId: string; filename
 export const mapShareToggle = ({ robotId, enabled }: { robotId: string; enabled: boolean }) =>
   api.post<Robot>(`/robots/${robotId}/map-share`, { robot_id: robotId, enabled });
 
+/** Cancel the active Nav2 goal outright — terminal state. */
+export const cancelGoal = ({ robotId }: { robotId: string }) =>
+  api.post<{ message: string }>("/robots/goal/cancel", { robot_id: robotId });
+
+/** Pause the active Nav2 goal: action cancelled (robot stops) + goal remembered. */
+export const pauseGoal = ({ robotId }: { robotId: string }) =>
+  api.post<{ message: string }>("/robots/goal/pause", { robot_id: robotId });
+
+/** Resume a paused goal by re-issuing it to Nav2. */
+export const resumeGoal = ({ robotId }: { robotId: string }) =>
+  api.post<{ message: string }>("/robots/goal/resume", { robot_id: robotId });
+
+/** Pause the robot's running pick & drop mission (task stays alive). */
+export const pauseMission = (robotId: string) =>
+  api.post<{ message: string }>("/tasks/pickdrop/pause", { robot_id: robotId });
+
+/** Resume the robot's paused pick & drop mission (goal re-issued). */
+export const resumeMission = (robotId: string) =>
+  api.post<{ message: string }>("/tasks/pickdrop/resume", { robot_id: robotId });
+
 export const systemInfoQuery = () =>
   queryOptions({
     queryKey: queryKeys.systemInfo,
