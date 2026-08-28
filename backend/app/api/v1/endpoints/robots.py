@@ -8,6 +8,7 @@ list and the operator console cost one query and zero per-robot I/O.
 from __future__ import annotations
 
 import re
+from contextlib import suppress
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends
@@ -45,6 +46,7 @@ from app.schemas.robot import (
     RobotTypeOut,
 )
 from app.services import robot_service
+from app.services.task_service import task_engine
 
 router = APIRouter(prefix="/robots", tags=["robots"])
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -233,18 +235,46 @@ def stop(body: RobotIdBody, _: Principal = Depends(require_operator)):
 
 
 @router.post("/emergency-stop", response_model=StatusResponse)
-def emergency_stop(body: RobotIdBody, _: Principal = Depends(require_operator)):
+async def emergency_stop(
+    body: RobotIdBody,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    _: Principal = Depends(require_operator),
+):
+    """Stop the robot immediately and pause any running task.
+
+    The task stays alive in a paused state so the operator can release the
+    emergency stop and *resume* — the robot continues from where it stopped
+    instead of restarting the mission.
+    """
     ros_manager.publish_emergency(body.robot_id, True)
+    task_id = task_engine.running_task_id(body.robot_id)
+    if task_id is not None:
+        with suppress(Exception):
+            await task_engine.pause_task(db, task_id)
     return StatusResponse(message=f"Emergency stop sent to {body.robot_id}")
 
 
 @router.post("/emergency-stop-all", response_model=StatusResponse)
-def emergency_stop_all(_: Principal = Depends(require_operator)):
+async def emergency_stop_all(
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    _: Principal = Depends(require_operator),
+):
     count = 0
     for robot_id in ros_manager.connected_robot_ids():
         ros_manager.publish_emergency(robot_id, True)
         count += 1
+        task_id = task_engine.running_task_id(robot_id)
+        if task_id is not None:
+            with suppress(Exception):
+                await task_engine.pause_task(db, task_id)
     return StatusResponse(message=f"Emergency stop sent to {count} robot(s)")
+
+
+@router.post("/emergency-release", response_model=StatusResponse)
+def emergency_release(body: RobotIdBody, _: Principal = Depends(require_operator)):
+    """Release a robot's emergency stop so it can drive again."""
+    ros_manager.publish_emergency(body.robot_id, False)
+    return StatusResponse(message=f"Emergency released for {body.robot_id}")
 
 
 @router.post("/{robot_id}/map-share", response_model=DataResponse[RobotOut])

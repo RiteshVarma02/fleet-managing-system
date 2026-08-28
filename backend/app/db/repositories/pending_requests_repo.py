@@ -1,12 +1,20 @@
-"""`pending_requests` collection — the task request queue (auto-assignment)."""
+"""`pending_requests` collection — the task request queue (auto-assignment).
+
+This repo owns *queued intent*: work no robot has been committed to yet.
+Scheduling ("not before T") lives here because robot assignment happens at
+claim time — `tasks_repo` only ever sees concrete executions. The scheduler
+(task_service) polls `claim_oldest()` and materialises tasks from what it
+claims.
+"""
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from pymongo import ReturnDocument
 
-from app.db.documents import serialize, to_object_id, utcnow
+from app.db.documents import as_utc, serialize, to_object_id, utcnow
 from app.db.mongo import Collections
 
 PENDING = "pending"
@@ -18,6 +26,24 @@ def _col(db):
     return db[Collections.pending_requests]
 
 
+def build_claim_query(now: datetime, robot_type: Optional[str] = None) -> Dict[str, Any]:
+    """Pure query builder for `claim_oldest` (unit-testable without Mongo).
+
+    Only requests whose `scheduled_at` is null or in the past are due.
+    """
+    due: Dict[str, Any] = {"$or": [{"scheduled_at": None}, {"scheduled_at": {"$lte": now}}]}
+    if robot_type:
+        # Two independent $or clauses must be combined under one $and.
+        return {
+            "status": PENDING,
+            "$and": [
+                {"$or": [{"robot_type": None}, {"robot_type": robot_type}]},
+                due,
+            ],
+        }
+    return {"status": PENDING, **due}
+
+
 async def create(
     db,
     *,
@@ -27,6 +53,7 @@ async def create(
     repeats: int,
     robot_type: Optional[str],
     created_by: Optional[str],
+    scheduled_at: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     document = {
         "task_type": task_type,
@@ -34,6 +61,7 @@ async def create(
         "to_location_id": to_location_id,
         "repeats": int(repeats),
         "robot_type": robot_type,
+        "scheduled_at": as_utc(scheduled_at),
         "status": PENDING,
         "assigned_task_id": None,
         "assigned_robot_id": None,
@@ -52,12 +80,9 @@ async def list_requests(db, *, status: Optional[str] = PENDING) -> List[Dict[str
 
 
 async def claim_oldest(db, *, robot_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Atomically take the oldest pending request (safe with many workers)."""
-    query: Dict[str, Any] = {"status": PENDING}
-    if robot_type:
-        query["$or"] = [{"robot_type": None}, {"robot_type": robot_type}]
+    """Atomically take the oldest *due* pending request (safe with many workers)."""
     doc = await _col(db).find_one_and_update(
-        query,
+        build_claim_query(utcnow(), robot_type),
         {"$set": {"status": ASSIGNED, "claimed_at": utcnow()}},
         sort=[("created_at", 1)],
         return_document=ReturnDocument.AFTER,

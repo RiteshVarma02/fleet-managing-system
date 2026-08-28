@@ -40,6 +40,7 @@ _STATUS_TOKENS: Tuple[Tuple[str, str], ...] = (
     ("COMPLETED", NAV_SUCCEEDED),
     ("FAILED", NAV_FAILED),
     ("ABORTED", NAV_FAILED),
+    ("ERROR", NAV_FAILED),
     ("IN_PROGRESS", NAV_ACTIVE),
     ("ACCEPTED", NAV_ACTIVE),
     ("READY", NAV_IDLE),
@@ -57,11 +58,16 @@ class NavigationCapability:
 
         self._nav_done = threading.Event()
         self._nav_done.set()
+        # Epoch increments on every goal send. Status updates carry the epoch
+        # they belong to, so a delayed terminal message from the previous leg
+        # (bridge jitter, queued status) can never satisfy the *current* wait.
+        self._nav_epoch = 0
         self._nav_state: Dict[str, Any] = {
             "status": NAV_IDLE,
             "goal": None,
             "message": None,
             "updated_at": time.time(),
+            "epoch": 0,
         }
         # Last commanded goal, kept so a paused goal can be re-sent on resume.
         # Nav2 has no native pause for NavigateToPose — the industry pattern is
@@ -87,6 +93,11 @@ class NavigationCapability:
         upper = raw.upper()
         for token, state in _STATUS_TOKENS:
             if token in upper:
+                # The forwarder confirms our pause-cancel with CANCELLED;
+                # keep the operator-facing state as paused instead.
+                with self._state_lock:
+                    if self._nav_state.get("status") == NAV_PAUSED and state == NAV_CANCELLED:
+                        return
                 self._set_nav_state(status=state, message=raw)
                 return
         self._set_nav_state(message=raw)
@@ -107,6 +118,8 @@ class NavigationCapability:
 
         goal = {"x": float(x), "y": float(y), "theta": float(theta)}
         with self._state_lock:
+            self._nav_epoch += 1
+            epoch = self._nav_epoch
             self._last_goal = dict(goal)
 
         self._nav_done.clear()
@@ -114,9 +127,10 @@ class NavigationCapability:
             status=NAV_SENDING,
             goal=goal,
             message="Goal published",
+            epoch=epoch,
         )
         self._goal_pub.publish(msg)
-        logger.info("%s goal -> (%.2f, %.2f, %.2f)", self.robot_id, x, y, theta)
+        logger.info("%s goal -> (%.2f, %.2f, %.2f) [epoch %d]", self.robot_id, x, y, theta, epoch)
         return True, "Goal published"
 
     def cancel_nav_goal(self) -> None:

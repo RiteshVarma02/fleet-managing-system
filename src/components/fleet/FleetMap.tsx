@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { cn } from "@/lib/utils";
 import type { LocationPoint, MapImage, Robot } from "@/lib/api/types";
@@ -9,6 +9,13 @@ interface FleetMapProps {
   locations?: LocationPoint[];
   selectedId?: string | null;
   onSelect?: (robotId: string) => void;
+  /**
+   * When set, clicking the map converts the pixel into world coordinates
+   * (metres on the occupancy grid) and reports it — used by "add waypoint".
+   */
+  onMapClick?: (point: { x: number; y: number }) => void;
+  /** Visual crosshair hint while a map-click interaction is armed. */
+  pickingMode?: boolean;
   className?: string;
 }
 
@@ -16,24 +23,94 @@ const FALLBACK = { width: 40, height: 40, resolution: 0.05, origin_x: -1, origin
 
 /**
  * Occupancy-grid viewport with robot + waypoint overlays.
- * Positions are computed in percentages so the map scales with its container
- * and no re-render loop is needed on resize.
+ *
+ * The `<img>` uses `object-contain`, so the drawn image can be letterboxed
+ * inside its container. Both the overlay markers and click→world conversion
+ * are computed against the actual drawn rectangle (`object-contain` geometry),
+ * which keeps clicks exactly where pins render.
  */
-export function FleetMap({ map, robots, locations = [], selectedId, onSelect, className }: FleetMapProps) {
+export function FleetMap({
+  map,
+  robots,
+  locations = [],
+  selectedId,
+  onSelect,
+  onMapClick,
+  pickingMode,
+  className,
+}: FleetMapProps) {
   const meta = map?.metadata ?? FALLBACK;
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState({ w: 0, h: 0 });
 
-  const project = useMemo(() => {
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      const rect = entries[0]?.contentRect;
+      if (rect) setBox({ w: rect.width, h: rect.height });
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  // Drawn-image geometry (mirrors CSS object-contain).
+  const geom = useMemo(() => {
     const spanX = meta.width * meta.resolution || 1;
     const spanY = meta.height * meta.resolution || 1;
+    const imageAspect = spanX / spanY || 1;
+    const w = box.w || 0;
+    const h = box.h || 0;
+    let drawW = w;
+    let drawH = w / imageAspect;
+    if (drawH > h) {
+      drawH = h;
+      drawW = h * imageAspect;
+    }
+    return {
+      spanX,
+      spanY,
+      drawW,
+      drawH,
+      offX: (w - drawW) / 2,
+      offY: (h - drawH) / 2,
+    };
+  }, [meta, box]);
+
+  const project = useMemo(() => {
+    const { spanX, spanY, drawW, drawH, offX, offY } = geom;
     return (x: number, y: number) => ({
-      left: ((x - meta.origin_x) / spanX) * 100,
-      top: 100 - ((y - meta.origin_y) / spanY) * 100,
+      left: offX + ((x - meta.origin_x) / spanX) * drawW,
+      top: offY + (1 - (y - meta.origin_y) / spanY) * drawH,
     });
-  }, [meta]);
+  }, [geom, meta.origin_x, meta.origin_y]);
+
+  function handleMapClick(event: React.MouseEvent<HTMLDivElement>) {
+    if (!onMapClick || !map) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const { spanX, spanY, drawW, drawH, offX, offY } = geom;
+    const px = event.clientX - rect.left - offX;
+    const py = event.clientY - rect.top - offY;
+    // Ignore clicks on the letterbox bars.
+    if (px < 0 || py < 0 || px > drawW || py > drawH) return;
+    onMapClick({
+      x: meta.origin_x + (px / drawW) * spanX,
+      y: meta.origin_y + (1 - py / drawH) * spanY,
+    });
+  }
 
   return (
-    <div className={cn("relative overflow-hidden rounded-lg border border-border bg-muted/30", className)}>
-      {map ? (
+    <div
+      ref={containerRef}
+      onClick={handleMapClick}
+      className={cn(
+        "relative overflow-hidden rounded-lg border border-border bg-muted/30",
+        onMapClick && map && "cursor-crosshair",
+        pickingMode && "ring-2 ring-primary/50",
+        className,
+      )}
+    >
+      {map && map.image ? (
         <img
           src={`data:image/png;base64,${map.image}`}
           alt="Occupancy grid of the current facility map"
@@ -55,12 +132,13 @@ export function FleetMap({ map, robots, locations = [], selectedId, onSelect, cl
       <div className="pointer-events-none absolute inset-0">
         {locations.map((point) => {
           const pos = project(point.x, point.y);
-          if (pos.left < -5 || pos.left > 105 || pos.top < -5 || pos.top > 105) return null;
+          if (pos.left < -5 || pos.left > box.w + 5 || pos.top < -5 || pos.top > box.h + 5)
+            return null;
           return (
             <div
               key={point.id}
               className="absolute -translate-x-1/2 -translate-y-1/2"
-              style={{ left: `${pos.left}%`, top: `${pos.top}%` }}
+              style={{ left: `${pos.left}px`, top: `${pos.top}px` }}
             >
               <div className="size-2 rounded-full bg-chart-2 ring-2 ring-background" />
               <span className="mt-1 block whitespace-nowrap text-[10px] font-medium text-muted-foreground">
@@ -77,12 +155,15 @@ export function FleetMap({ map, robots, locations = [], selectedId, onSelect, cl
             <button
               key={robot.id}
               type="button"
-              onClick={() => onSelect?.(robot.id)}
+              onClick={(event) => {
+                event.stopPropagation(); // don't fire the map-click handler
+                onSelect?.(robot.id);
+              }}
               className={cn(
                 "pointer-events-auto absolute -translate-x-1/2 -translate-y-1/2 rounded-full transition-transform",
                 onSelect ? "cursor-pointer hover:scale-110" : "cursor-default",
               )}
-              style={{ left: `${pos.left}%`, top: `${pos.top}%` }}
+              style={{ left: `${pos.left}px`, top: `${pos.top}px` }}
               aria-label={`Robot ${robot.name}`}
               aria-pressed={active}
             >

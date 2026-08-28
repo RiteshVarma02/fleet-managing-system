@@ -73,7 +73,7 @@ class RobotMapResponse(BaseModel):
 
 class MapImageResponse(BaseModel):
     status: str = "success"
-    image: str
+    image: str = ""
     metadata: MapMetadata
 
 

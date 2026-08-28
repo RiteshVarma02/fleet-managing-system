@@ -124,6 +124,11 @@ class TaskRequestCreate(BaseModel):
     to_location_id: Optional[str] = None
     robot_type: Optional[str] = Field(default=None, max_length=64)
     repeats: int = Field(default=1, ge=1, le=1000)
+    # When set, the request sits in the queue until this instant before the
+    # scheduler will claim it (naive values are treated as local server time).
+    scheduled_at: Optional[datetime] = Field(default=None, alias="scheduled_at")
+
+    model_config = {"populate_by_name": True}
 
 
 class TaskRequestOut(BaseModel):
@@ -134,6 +139,7 @@ class TaskRequestOut(BaseModel):
     to_location_id: Optional[str] = None
     robot_type: Optional[str] = None
     repeats: int = 1
+    scheduled_at: Optional[datetime] = None
     assigned_task_id: Optional[str] = None
     assigned_robot_id: Optional[str] = None
     created_at: Optional[datetime] = None
@@ -148,6 +154,7 @@ class TaskRequestOut(BaseModel):
             to_location_id=doc.get("to_location_id"),
             robot_type=doc.get("robot_type"),
             repeats=int(doc.get("repeats") or 1),
+            scheduled_at=doc.get("scheduled_at"),
             assigned_task_id=doc.get("assigned_task_id"),
             assigned_robot_id=doc.get("assigned_robot_id"),
             created_at=doc.get("created_at"),

@@ -132,7 +132,20 @@ export function CapabilityPanel({
           </div>
           {telemetry?.nav?.state && (
             <p className="text-xs text-muted-foreground">
-              Nav: <span className="text-foreground">{telemetry.nav.state}</span>
+              Nav:{" "}
+              <span
+                className={
+                  telemetry.nav.state === "paused"
+                    ? "text-amber-500 font-medium"
+                    : telemetry.nav.state === "active" || telemetry.nav.state === "succeeded"
+                      ? "text-chart-2"
+                      : telemetry.nav.state === "failed" || telemetry.nav.state === "aborted"
+                        ? "text-destructive"
+                        : "text-foreground"
+                }
+              >
+                {telemetry.nav.state}
+              </span>
               {typeof telemetry.nav.distance_remaining === "number" &&
                 ` · ${telemetry.nav.distance_remaining.toFixed(2)} m left`}
             </p>

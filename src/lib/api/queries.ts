@@ -16,6 +16,7 @@ import type {
   SystemInfo,
   Task,
   TaskProgress,
+  TaskRequest,
 } from "./types";
 
 /**
@@ -51,6 +52,7 @@ export const queryKeys = {
   locations: ["locations"] as const,
   tasks: (robotId?: string) => (robotId ? (["tasks", robotId] as const) : (["tasks"] as const)),
   taskProgress: (robotId: string) => ["tasks", "progress", robotId] as const,
+  taskRequests: ["tasks", "requests", "unassigned"] as const,
   currentMap: ["maps", "current"] as const,
   maps: ["maps"] as const,
   systemInfo: ["system", "info"] as const,
@@ -61,7 +63,7 @@ export const robotsQuery = (live = false) =>
     queryKey: queryKeys.robots,
     queryFn: ({ signal }) => api.get<Robot[]>("/robots", signal),
     refetchInterval: live ? POLL.fleetLive : POLL.fleet,
-    staleTime: (live ? POLL.fleetLive : POLL.fleet) - 500,
+    staleTime: 1_000,
   });
 
 export const robotStatusQuery = (robotId: string | null, live = false) =>
@@ -74,14 +76,14 @@ export const robotStatusQuery = (robotId: string | null, live = false) =>
     staleTime: 500,
   });
 
-export const robotMapQuery = (robotId: string | null, live = false) =>
+export const robotMapQuery = (robotId: string | null, live = false, fast = false) =>
   queryOptions({
     queryKey: queryKeys.robotMap(robotId ?? "none"),
     queryFn: ({ signal }) => api.get<RobotMap>(`/robots/${robotId}/map`, signal),
     enabled: Boolean(robotId),
     // While the telemetry socket is up (robot live / SLAM building), poll the
     // grid fast so the preview tracks the growing map; otherwise back off.
-    refetchInterval: robotId && live ? POLL.progress : 10_000,
+    refetchInterval: fast ? 2_000 : robotId && live ? POLL.progress : 10_000,
     staleTime: 1_000,
     retry: false,
   });
@@ -130,7 +132,19 @@ export const locationsQuery = () =>
     staleTime: 5 * 60_000,
   });
 
-export const tasksQuery = (robotId?: string) =>
+/** Save a named waypoint (map click → world coords). */
+export const createLocation = (body: {
+  name: string;
+  x: number;
+  y: number;
+  theta?: number;
+  map_name?: string | null;
+}) => api.post<LocationPoint>("/locations", { theta: 0, ...body });
+
+export const deleteLocation = (locationId: string) =>
+  api.del<{ message: string }>(`/locations/${locationId}`);
+
+export const tasksQuery = (robotId?: string, fast = false) =>
   queryOptions({
     queryKey: queryKeys.tasks(robotId),
     queryFn: ({ signal }) =>
@@ -138,8 +152,8 @@ export const tasksQuery = (robotId?: string) =>
         `/tasks?limit=50${robotId ? `&robot_id=${encodeURIComponent(robotId)}` : ""}`,
         signal,
       ),
-    refetchInterval: POLL.tasks,
-    staleTime: POLL.tasks - 1_000,
+    refetchInterval: fast ? 2_000 : POLL.tasks,
+    staleTime: fast ? 1_000 : POLL.tasks - 1_000,
   });
 
 export const taskProgressQuery = (robotId: string | null, active = false) =>
@@ -154,16 +168,42 @@ export const taskProgressQuery = (robotId: string | null, active = false) =>
     staleTime: 1_000,
   });
 
+/** Queued (possibly scheduled) unassigned requests awaiting a free robot. */
+export const unassignedRequestsQuery = () =>
+  queryOptions({
+    queryKey: queryKeys.taskRequests,
+    queryFn: ({ signal }) => api.get<TaskRequest[]>("/tasks/requests/unassigned", signal),
+    refetchInterval: POLL.tasks,
+    staleTime: POLL.tasks - 1_000,
+  });
+
+/** Queue unassigned work; `scheduledAt` defers scheduler pickup until then. */
+export const createTaskRequest = (body: {
+  type?: string;
+  from_location_id: string;
+  to_location_id: string;
+  repeats: number;
+  scheduled_at?: string | null;
+}) =>
+  api.post<TaskRequest>("/tasks/requests", {
+    type: "pick_drop",
+    ...body,
+    scheduled_at: body.scheduled_at ?? undefined,
+  });
+
+/** Remove a queued request before the scheduler assigns it. */
+export const cancelTaskRequest = (requestId: string) =>
+  api.post<{ message: string }>(`/tasks/requests/${requestId}/cancel`);
+
 export const currentMapQuery = () =>
   queryOptions({
     queryKey: queryKeys.currentMap,
     queryFn: ({ signal }) => api.get<MapImage>("/maps/current", signal),
-    // The occupancy grid is large and changes rarely: fetch once per session
-    // unless the operator explicitly reloads it.
-    staleTime: 10 * 60_000,
+    staleTime: 10_000,
     gcTime: 30 * 60_000,
-    retry: false,
-    refetchOnWindowFocus: false,
+    retry: 1,
+    refetchOnWindowFocus: true,
+    refetchInterval: 30_000,
   });
 
 export const mapsQuery = () =>

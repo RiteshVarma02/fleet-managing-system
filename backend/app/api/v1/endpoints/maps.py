@@ -63,7 +63,12 @@ async def activate_map(
 
 @router.get("/current", response_model=MapImageResponse)
 def current_map(_: Principal = Depends(get_current_user)):
-    data = map_service.current_map()
+    try:
+        data = map_service.current_map()
+    except Exception:
+        return MapImageResponse(image="", metadata=MapMetadata(
+            width=0, height=0, resolution=0.05, origin_x=0.0, origin_y=0.0
+        ))
     return MapImageResponse(image=data["image"], metadata=MapMetadata(**data["metadata"]))
 
 

@@ -152,6 +152,7 @@ async def create_request(
     db: AsyncIOMotorDatabase = Depends(get_db),
     user: Principal = Depends(require_operator),
 ):
+    """Queue unassigned work; `scheduled_at` defers it until that instant."""
     request = await pending_requests_repo.create(
         db,
         task_type=body.type,
@@ -160,8 +161,9 @@ async def create_request(
         robot_type=body.robot_type,
         repeats=body.repeats,
         created_by=user.username,
+        scheduled_at=body.scheduled_at,
     )
-    return DataResponse(data=TaskRequestOut.from_document(request))
+    return DataResponse(data=TaskRequestOut.model_validate(request))
 
 
 @router.get("/requests/unassigned", response_model=DataResponse[List[TaskRequestOut]])
@@ -171,6 +173,18 @@ async def unassigned_requests(
 ):
     rows = await pending_requests_repo.list_requests(db, status=pending_requests_repo.PENDING)
     return DataResponse(data=[TaskRequestOut.from_document(row) for row in rows])
+
+
+@router.post("/requests/{request_id}/cancel", response_model=StatusResponse)
+async def cancel_request(
+    request_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    _: Principal = Depends(require_operator),
+):
+    """Remove a queued (possibly scheduled) request before it is assigned."""
+    if not await pending_requests_repo.cancel(db, request_id):
+        raise NotFoundError(f"Pending request '{request_id}' not found")
+    return StatusResponse(message=f"Request {request_id} cancelled")
 
 
 # --------------------------------------------------------------------------

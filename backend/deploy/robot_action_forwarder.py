@@ -41,6 +41,7 @@ class RobotActionForwarder(Node):
         # Track current goal
         self.current_goal_handle = None
         self.goal_start_time = None
+        self._last_feedback_second = -1
         
         # Action client to the local robot action server
         self.navigate_client = ActionClient(
@@ -163,6 +164,7 @@ class RobotActionForwarder(Node):
         goal_msg.pose = pose_msg
         
         self.goal_start_time = time.time()
+        self._last_feedback_second = -1
         
         # Send goal and attach callbacks
         self.get_logger().info(f'🎯 Sending goal to nav2...')
@@ -174,13 +176,18 @@ class RobotActionForwarder(Node):
         return True
 
     def feedback_callback(self, feedback_msg):
-        """Handle navigation feedback (called periodically during navigation)"""
+        """Handle navigation feedback (called periodically during navigation).
+
+        Throttled to one status per second — Nav2 emits feedback far more often
+        and every message crosses the domain bridge.
+        """
         try:
             elapsed = time.time() - self.goal_start_time
             self.get_logger().debug(f'⚙️  Feedback at {elapsed:.1f}s')
-            
-            # Publish intermediate status
-            if elapsed > 1.0:  # Only after 1 second
+
+            whole_second = int(elapsed)
+            if elapsed > 1.0 and whole_second != self._last_feedback_second:
+                self._last_feedback_second = whole_second
                 self._publish_status('IN_PROGRESS', f'{elapsed:.1f}s elapsed')
         except Exception as e:
             self.get_logger().debug(f'Feedback error: {e}')
@@ -209,35 +216,33 @@ class RobotActionForwarder(Node):
         result_future.add_done_callback(self.get_result_callback)
 
     def get_result_callback(self, future):
-        """Handle navigation result"""
+        """Handle navigation result — MUST branch on the real goal status code.
+
+        rclpy resolves get_result_async() to a response carrying `.status`
+        (action_msgs GoalStatus int) and `.result` (the Result message, which
+        is always truthy!). Branching on `.result` truthiness reported
+        COMPLETED for cancelled and aborted goals too, which made the fleet
+        server believe unreachable drops were reached.
+        """
         try:
-            result = future.result()
+            response = future.result()
             elapsed = time.time() - self.goal_start_time
-            
-            if result and result.result:
-                # Check the status code
-                status = getattr(result.result, 'status', None)
-                
-                self.get_logger().info(
-                    f'✓ Navigation completed in {elapsed:.1f}s with status={status}'
-                )
+
+            status_code = getattr(response, "status", None)
+            # action_msgs/msg/GoalStatus: 4=SUCCEEDED, 5=CANCELED, 6=ABORTED
+            if status_code == 4:
+                self.get_logger().info(f'✓ Navigation succeeded in {elapsed:.1f}s')
                 self._publish_status('COMPLETED', f'Goal reached in {elapsed:.1f}s')
+            elif status_code == 5:
+                self.get_logger().warning(f'Goal cancelled after {elapsed:.1f}s')
+                self._publish_status('CANCELLED', f'Goal cancelled after {elapsed:.1f}s')
+            elif status_code == 6:
+                self.get_logger().error(f'✗ Goal aborted after {elapsed:.1f}s')
+                self._publish_status('FAILED', f'Navigation aborted after {elapsed:.1f}s')
             else:
-                # Check wrapped_result status
-                status_code = getattr(result, 'status', None)
-                self.get_logger().info(f'Result status code: {status_code}')
-                
-                # action_msgs/msg/GoalStatus: 4=succeeded, 5=canceled, 6=aborted
-                if status_code == 4:
-                    self.get_logger().info(f'✓ Navigation succeeded in {elapsed:.1f}s')
-                    self._publish_status('COMPLETED', f'Goal reached in {elapsed:.1f}s')
-                elif status_code == 5:
-                    self.get_logger().warning(f'Goal cancelled after {elapsed:.1f}s')
-                    self._publish_status('CANCELLED', f'Goal cancelled after {elapsed:.1f}s')
-                else:
-                    self.get_logger().error(f'Goal failed with status {status_code}')
-                    self._publish_status('FAILED', f'Navigation failed (status {status_code})')
-                    
+                self.get_logger().error(f'✗ Goal ended with unknown status {status_code}')
+                self._publish_status('FAILED', f'Navigation failed (status {status_code})')
+
         except Exception as e:
             elapsed = time.time() - self.goal_start_time
             self.get_logger().error(f'✗ Navigation failed after {elapsed:.1f}s: {e}')

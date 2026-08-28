@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
-import { CheckCircle2, FileUp, MapPinned, Play, Save, Share2, Square, Trash2 } from "lucide-react";
+import { CheckCircle2, FileUp, MapPinned, MapPin, Play, Save, Share2, Square, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { FleetMap } from "@/components/fleet/FleetMap";
+import { Joystick } from "@/components/fleet/Joystick";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -39,6 +40,9 @@ import {
   slamStart,
   slamStop,
   uploadMap,
+  createLocation,
+  deleteLocation,
+  locationsQuery,
 } from "@/lib/api/queries";
 import type { MapDetail, MapImage, MapMetadata, MapSummary } from "@/lib/api/types";
 
@@ -124,7 +128,7 @@ function MapsPage() {
             )}
           </div>
           <CurrentMapPreview map={current} />
-          <SlamPanel />
+          <SlamPanel activeMapName={activeMap?.name ?? null} />
         </section>
 
         <aside className="space-y-4">
@@ -148,19 +152,51 @@ function CurrentMapPreview({ map }: { map?: MapImage | null }) {
   );
 }
 
-function SlamPanel() {
+function SlamPanel({ activeMapName }: { activeMapName: string | null }) {
   const queryClient = useQueryClient();
   const { data: robots = [] } = useQuery(robotsQuery(false));
+  const { data: locations = [] } = useQuery(locationsQuery());
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [mapName, setMapName] = useState("new_map");
   const [building, setBuilding] = useState(false);
   const [savedName, setSavedName] = useState<string | null>(null);
+  // Waypoint picking state
+  const [picking, setPicking] = useState(false);
+  const [pickedPoint, setPickedPoint] = useState<{ x: number; y: number } | null>(null);
+  const [pointName, setPointName] = useState("");
+
+  const addPoint = useMutation({
+    mutationFn: () =>
+      createLocation({
+        name: pointName.trim(),
+        x: pickedPoint!.x,
+        y: pickedPoint!.y,
+        map_name: activeMapName,
+      }),
+    onSuccess: (saved) => {
+      toast.success(`Waypoint "${saved.name}" saved`);
+      setPointName("");
+      setPickedPoint(null);
+      setPicking(false);
+      queryClient.invalidateQueries({ queryKey: queryKeys.locations });
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  const removePoint = useMutation({
+    mutationFn: deleteLocation,
+    onSuccess: () => {
+      toast.success("Waypoint removed");
+      queryClient.invalidateQueries({ queryKey: queryKeys.locations });
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
 
   const selectedRobot = robots.find((robot) => robot.id === selectedId) ?? null;
 
-  // While building, poll the robot's grid every 2s so the preview tracks the
-  // growing map; outside a build session the 10s fallback keeps it fresh enough.
-  const { data: robotMapData } = useQuery(robotMapQuery(selectedId, building));
+  // While a robot is selected, poll its grid fast (2s) so the preview tracks
+  // the growing map the moment it appears — no manual refresh needed.
+  const { data: robotMapData } = useQuery(robotMapQuery(selectedId, Boolean(selectedId), building));
   const robotMap = robotMapData?.available ? robotMapData : null;
   const displayMap: MapImage | null = robotMap
     ? {
@@ -169,6 +205,19 @@ function SlamPanel() {
         metadata: robotMap.metadata ?? EMPTY_METADATA,
       }
     : null;
+
+  const online = selectedRobot?.status === "online";
+
+  const drive = useMutation({
+    mutationFn: (payload: { linear: number; angular: number }) =>
+      api.post("/robots/move", { robot_id: selectedId, ...payload }),
+    onError: (error: Error) => toast.error(error.message),
+  });
+
+  const halt = useMutation({
+    mutationFn: () => api.post("/robots/stop", { robot_id: selectedId }),
+    onError: (error: Error) => toast.error(error.message),
+  });
 
   const mapRobots = useMemo(
     () => robots.filter((robot) => robot.id === selectedId),
@@ -272,20 +321,89 @@ function SlamPanel() {
         </div>
       </div>
 
-      <div className="mt-3">
-        <FleetMap
-          map={displayMap}
-          robots={mapRobots}
-          locations={[]}
-          className="aspect-[16/10] w-full"
-        />
-        <p className="mt-1 text-xs text-muted-foreground">
-          {selectedId
-            ? robotMap
-              ? `Live preview of ${selectedRobot?.name ?? selectedId}'s map`
-              : "No map yet for this robot — start SLAM and drive around."
-            : "Select a robot to preview and build its map."}
-        </p>
+      <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_240px]">
+        <div>
+          <FleetMap
+            map={displayMap}
+            robots={mapRobots}
+            locations={locations}
+            onMapClick={picking ? (point) => setPickedPoint(point) : undefined}
+            pickingMode={picking}
+            className="aspect-[16/10] w-full"
+          />
+          <p className="mt-1 text-xs text-muted-foreground">
+            {selectedId
+              ? robotMap
+                ? `Live preview of ${selectedRobot?.name ?? selectedId}'s map`
+                : "No map yet for this robot — start SLAM and drive around."
+              : "Select a robot to preview and build its map."}
+          </p>
+          {picking && pickedPoint && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Picked: x={pickedPoint.x.toFixed(2)}, y={pickedPoint.y.toFixed(2)}
+              {activeMapName ? ` · map: ${activeMapName}` : ""}
+            </p>
+          )}
+          {!displayMap && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Load a fleet map first — waypoints need a coordinate system.
+            </p>
+          )}
+          <div className="mt-3 flex gap-2">
+            <Button
+              size="sm"
+              variant={picking ? "default" : "outline"}
+              className="flex-1"
+              disabled={!displayMap || addPoint.isPending}
+              onClick={() => {
+                setPicking((prev) => !prev);
+                if (picking) setPickedPoint(null);
+              }}
+            >
+              <MapPin className="mr-1 size-4" />
+              {picking ? "Click the map (toggle off when done)" : "Pick on map"}
+            </Button>
+            <Button
+              size="sm"
+              disabled={!pointName.trim() || !pickedPoint || addPoint.isPending}
+              onClick={() => addPoint.mutate()}
+            >
+              <Save className="mr-1 size-4" /> Save
+            </Button>
+          </div>
+          {locations.length > 0 && (
+            <ul className="mt-3 space-y-1 text-sm">
+              {locations.map((point) => (
+                <li key={point.id} className="flex items-center justify-between gap-2">
+                  <span className="truncate">
+                    <MapPin className="mr-1 inline size-3 text-chart-2" />
+                    {point.name}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label={`Delete ${point.name}`}
+                    className="text-muted-foreground transition-colors hover:text-destructive"
+                    onClick={() => removePoint.mutate(point.id)}
+                  >
+                    <X className="size-4" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <div className="flex flex-col items-center justify-center rounded-lg border border-border bg-card p-3">
+          <p className="mb-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Drive the robot
+          </p>
+          <Joystick
+            disabled={!online}
+            onCommand={(linear, angular) => drive.mutate({ linear, angular })}
+            onRelease={() => {
+              if (online) halt.mutate();
+            }}
+          />
+        </div>
       </div>
 
       <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto_auto]">

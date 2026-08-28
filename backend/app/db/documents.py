@@ -45,6 +45,18 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def as_utc(value: Optional[datetime]) -> Optional[datetime]:
+    """Normalise a datetime to aware UTC so Mongo stores a comparable BSON date.
+
+    Naive values (e.g. from client payloads) are assumed to already be UTC.
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def to_object_id(value: Any) -> Optional[ObjectId]:
     if isinstance(value, ObjectId):
         return value

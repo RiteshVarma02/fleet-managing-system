@@ -186,7 +186,15 @@ class TaskEngine:
             self._pause_flags.pop(task_id, None)
             raise ValidationError(detail)
 
-        return dict(self._progress.get(task_id) or {})
+        # Reflect the paused state IMMEDIATELY. The poll loop would only reach
+        # _wait_while_paused on its next tick (up to 1s later); without this,
+        # a resume in that window fails with "no paused task".
+        current = self._progress.get(task_id)
+        if current is not None:
+            current["status"] = TaskStatus.paused.value
+            current["message"] = "Paused by operator"
+        await tasks_repo.set_status(db, task_id, TaskStatus.paused, message="Paused by operator")
+        return dict(current or {})
 
     async def resume_task(self, db, task_id: str) -> Dict[str, Any]:
         """Re-issue the interrupted goal and continue the remaining legs."""
@@ -291,6 +299,11 @@ class TaskEngine:
 
     async def _drive_to(self, db, task_id: str, robot_id: str, location: Dict[str, Any]) -> None:
         controller = robot_service.require_controller(robot_id, "navigation")
+        # Entry check closes the between-legs race: without it a pause landing
+        # just after the previous leg returned would still let the next goal
+        # publish before the first poll tick noticed the flag.
+        if self._pause_flags.get(task_id):
+            raise _TaskPaused()
         ok, detail = controller.send_nav2_goal(
             float(location.get("x", 0.0)),
             float(location.get("y", 0.0)),
@@ -298,6 +311,16 @@ class TaskEngine:
         )
         if not ok:
             raise ValidationError(detail)
+        # Only terminal states stamped with THIS goal's epoch may end the wait;
+        # anything older is a delayed message from the previous leg.
+        # Read epoch from controller's internal state after goal is sent.
+        nav_status = controller.get_nav_status()
+        epoch = int(nav_status.get("epoch") or 0)
+        # Defensive: if epoch is 0 (not set yet), wait one poll cycle for it to be set
+        if epoch == 0:
+            await asyncio.sleep(poll)
+            nav_status = controller.get_nav_status()
+            epoch = int(nav_status.get("epoch") or 0)
 
         self._progress.setdefault(task_id, {})["leg"] = location.get("name")
         self._progress.setdefault(task_id, {})["status"] = TaskStatus.running.value
@@ -315,7 +338,10 @@ class TaskEngine:
             waited += poll
             if self._pause_flags.get(task_id):
                 raise _TaskPaused()
-            if ros_state := controller.get_nav_status().get("status"):
+            nav = controller.get_nav_status()
+            if nav.get("epoch") != epoch:
+                continue  # stale update from a previous leg — ignore
+            if ros_state := nav.get("status"):
                 if ros_state in TERMINAL_NAV_STATES:
                     if ros_state == NAV_SUCCEEDED:
                         return

@@ -169,6 +169,21 @@ export interface TaskProgress {
   message?: string | null;
 }
 
+/** Queued unassigned work; `scheduled_at` defers scheduler pickup. */
+export interface TaskRequest {
+  id: string;
+  task_type: string;
+  status: string;
+  from_location_id: string | null;
+  to_location_id: string | null;
+  robot_type: string | null;
+  repeats: number;
+  scheduled_at: string | null;
+  assigned_task_id: string | null;
+  assigned_robot_id: string | null;
+  created_at: string | null;
+}
+
 export interface MapMetadata {
   width: number;
   height: number;

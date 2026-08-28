@@ -85,4 +85,9 @@ async def ensure_indexes() -> None:
     await db[Collections.pending_requests].create_index(
         [("status", ASCENDING), ("created_at", ASCENDING)]
     )
+    # Serves the scheduler's due-request claim: status + scheduled_at filter
+    # with created_at as the sort key.
+    await db[Collections.pending_requests].create_index(
+        [("status", ASCENDING), ("scheduled_at", ASCENDING), ("created_at", ASCENDING)]
+    )
     logger.info("MongoDB indexes ensured")
