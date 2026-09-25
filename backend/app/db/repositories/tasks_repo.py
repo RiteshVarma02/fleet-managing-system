@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from pymongo import ReturnDocument
 
@@ -12,6 +12,11 @@ from app.db.mongo import Collections
 
 def _col(db):
     return db[Collections.tasks]
+
+
+def _status_value(status: Union[TaskStatus, str]) -> str:
+    """Accept enum or raw string; reject unknown values."""
+    return TaskStatus(status).value
 
 
 def _history(db):
@@ -95,8 +100,9 @@ async def update(db, task_id: str, **fields: Any) -> Optional[Dict[str, Any]]:
 
 
 async def set_status(
-    db, task_id: str, status: TaskStatus, message: Optional[str] = None
+    db, task_id: str, status: Union[TaskStatus, str], message: Optional[str] = None
 ) -> Optional[Dict[str, Any]]:
+    status = TaskStatus(status)
     updates: Dict[str, Any] = {"status": status.value, "updated_at": utcnow()}
     if message is not None:
         updates["message"] = message
@@ -132,10 +138,10 @@ async def delete(db, task_id: str) -> bool:
 
 
 async def append_history(
-    db, task_id: str, status: TaskStatus, message: Optional[str] = None
+    db, task_id: str, status: Union[TaskStatus, str], message: Optional[str] = None
 ) -> None:
     await _history(db).insert_one(
-        {"task_id": task_id, "status": status.value, "message": message, "at": utcnow()}
+        {"task_id": task_id, "status": _status_value(status), "message": message, "at": utcnow()}
     )
 
 
