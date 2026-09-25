@@ -267,7 +267,7 @@ class TaskEngine:
                         f"Cycle {cycle + 1}/{repeats} done"
                     )
                     await tasks_repo.append_history(
-                        db, task_id, TaskStatus.running.value, f"Cycle {cycle + 1}/{repeats} done"
+                        db, task_id, TaskStatus.running, f"Cycle {cycle + 1}/{repeats} done"
                     )
         except asyncio.CancelledError:
             status, message = TaskStatus.cancelled, "Cancelled"
@@ -278,7 +278,7 @@ class TaskEngine:
             status, message = TaskStatus.failed, str(exc)
         except Exception as exc:  # pragma: no cover - defensive
             logger.exception("Task %s failed", task_id)
-            status, message = TaskStatus.failed, f"Unexpected error: {exc}"
+            status, message = TaskStatus.failed, f"Unexpected error: {type(exc).__name__}: {exc}"
         finally:
             self._running.pop(task_id, None)
             with contextlib.suppress(Exception):
@@ -317,6 +317,7 @@ class TaskEngine:
         nav_status = controller.get_nav_status()
         epoch = int(nav_status.get("epoch") or 0)
         # Defensive: if epoch is 0 (not set yet), wait one poll cycle for it to be set
+        poll = max(0.2, settings.nav_poll_interval_seconds)
         if epoch == 0:
             await asyncio.sleep(poll)
             nav_status = controller.get_nav_status()
@@ -328,10 +329,9 @@ class TaskEngine:
             f"Navigating to {location.get('name')}"
         )
         await tasks_repo.append_history(
-            db, task_id, TaskStatus.running.value, f"Navigating to {location.get('name')}"
+            db, task_id, TaskStatus.running, f"Navigating to {location.get('name')}"
         )
 
-        poll = max(0.2, settings.nav_poll_interval_seconds)
         waited = 0.0
         while waited < settings.nav_goal_timeout_seconds:
             await asyncio.sleep(poll)
@@ -365,7 +365,7 @@ class TaskEngine:
         }:
             await tasks_repo.set_status(db, task_id, status, message=message)
         if robot_id:
-            await robots_repo.upsert(db, robot_id, active_task_id=None)
+            await robots_repo.clear_active_task(db, robot_id)
 
     # ------------------------------------------------------------------
     # scheduler

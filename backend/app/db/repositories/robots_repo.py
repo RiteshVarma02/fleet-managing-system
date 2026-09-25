@@ -115,6 +115,14 @@ async def set_status(db, robot_id: str, status: RobotStatus) -> None:
     )
 
 
+async def clear_active_task(db, robot_id: str) -> None:
+    """Explicit unset: `upsert` ignores None values, so it can't clear this."""
+    await _col(db).update_one(
+        {"robot_id": robot_id},
+        {"$set": {"active_task_id": None, "updated_at": utcnow()}},
+    )
+
+
 async def mark_all_offline(db) -> int:
     result = await _col(db).update_many(
         {"is_deleted": False},
