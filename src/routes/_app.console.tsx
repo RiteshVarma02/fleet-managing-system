@@ -135,6 +135,7 @@ function ConsolePage() {
       (task) =>
         task.robot_id === selectedId && (task.status === "running" || task.status === "paused"),
     );
+  
   const showProgress = Boolean(robot?.active_task_id) || taskActive;
   const { data: progress } = useQuery(taskProgressQuery(selectedId, showProgress));
 
@@ -485,7 +486,7 @@ function ConsolePage() {
                   !selectedId ||
                   !search.pickup ||
                   !search.drop ||
-                  missionActive ||
+                  taskActive ||
                   startMission.isPending
                 }
                 onClick={() => startMission.mutate()}
@@ -573,7 +574,7 @@ function ConsolePage() {
                   >
                     {missionStatusLabel}
                   </span>{" "}
-                  · cycle {Math.min(progress.completed_repeats + 1, progress.repeats)}/{progress.repeats}
+                  · cycle {progress.completed_repeats || 0}/{progress.repeats}
                 </p>
                 {progress.message && (
                   <p className="mt-1 text-xs text-muted-foreground">{progress.message}</p>

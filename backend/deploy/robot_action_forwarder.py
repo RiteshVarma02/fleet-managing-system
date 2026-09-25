@@ -18,8 +18,37 @@ from rclpy.executors import MultiThreadedExecutor
 from nav2_msgs.action import NavigateToPose
 from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Bool, String
+from action_msgs.msg import GoalStatus
 import os
 import time
+
+
+class RobotStatus:
+    """Standardized robot navigation statuses."""
+    PENDING = GoalStatus.STATUS_ACCEPTED
+    IN_PROGRESS = GoalStatus.STATUS_EXECUTING
+    ACCEPTED = GoalStatus.STATUS_ACCEPTED
+    COMPLETED = GoalStatus.STATUS_SUCCEEDED
+    CANCELED = GoalStatus.STATUS_CANCELED
+    FAILED = GoalStatus.STATUS_ABORTED
+
+
+STATUS_STRING_TO_CODE: dict[str, int] = {
+    'READY': RobotStatus.PENDING,
+    'SENDING_GOAL': RobotStatus.PENDING,
+    'IN_PROGRESS': RobotStatus.IN_PROGRESS,
+    'ACCEPTED': RobotStatus.ACCEPTED,
+    'COMPLETED': RobotStatus.COMPLETED,
+    'CANCELED': RobotStatus.CANCELED,
+    'FAILED': RobotStatus.FAILED,
+    'ERROR': RobotStatus.FAILED,
+}
+
+
+def _convert_status_to_code(status: str) -> int:
+    """Convert raw status string to GoalStatus int code."""
+    return STATUS_STRING_TO_CODE.get(status.upper(), GoalStatus.STATUS_UNKNOWN)
+
 
 class RobotActionForwarder(Node):
     def __init__(
@@ -86,19 +115,57 @@ class RobotActionForwarder(Node):
             f'  goal_topic={self.goal_topic}\n'
             f'  status_topic={self.status_topic}'
         )
-        self._publish_status('READY')
+        self._publish_status_with_code(GoalStatus.STATUS_UNKNOWN)
 
-    def _publish_status(self, status: str, message: str = ""):
-        """Helper to publish status messages"""
+    def _publish_status_with_code(self, status_code: GoalStatus):
+        """Publish status with proper GoalStatus code (for downstream enum access)."""
+        
+        # Create human-readable message
+        status_msg = String()
+        # Map numeric code to readable message using correct integer values
+        status_dict = {
+            GoalStatus.STATUS_UNKNOWN: 'UNKNOWN',
+            GoalStatus.STATUS_ACCEPTED: 'ACCEPTED',
+            GoalStatus.STATUS_EXECUTING: 'IN_PROGRESS',
+            GoalStatus.STATUS_SUCCEEDED: 'COMPLETED',
+            GoalStatus.STATUS_CANCELED: 'CANCELLED',
+            GoalStatus.STATUS_ABORTED: 'FAILED',
+        }
+
+        text_status = status_dict.get(status_code, f'STATUS_{status_code}')
+        
+        msg_data = f'[{self.robot_id}] {text_status}'
+        status_msg.data = msg_data
+        
+        self.status_pub.publish(status_msg)
+        self.get_logger().info(f'📤 STATUS CODE: {status_code} → {msg_data}')
+
+    def _publish_status(self, status_str: str, message=None):
+        """Helper to publish status messages with optional custom text"""
         if message:
-            msg_data = f'[{self.robot_id}] {status}: {message}'
+            msg_data = f'[{self.robot_id}] {status_str}: {message}'
         else:
-            msg_data = f'[{self.robot_id}] {status}'
+            msg_data = f'[{self.robot_id}] {status_str}'
         
         status_msg = String()
         status_msg.data = msg_data
         self.status_pub.publish(status_msg)
         self.get_logger().info(f'📤 STATUS: {msg_data}')
+
+    def _publish_status_with_code(self, status_code: GoalStatus):
+        """Helper to publish status using internal action code"""
+        # Map internal status codes to user-friendly status strings
+        status_map = {
+            GoalStatus.STATUS_UNKNOWN: 'UNKNOWN',
+            GoalStatus.STATUS_ACCEPTED: 'ACCEPTED',
+            GoalStatus.STATUS_EXECUTING: 'EXECUTING',
+            GoalStatus.STATUS_SUCCEEDED: 'SUCCEEDED',
+            GoalStatus.STATUS_CANCELED: 'CANCELED',
+            GoalStatus.STATUS_ABORTED: 'ABORTED'
+        }
+        
+        status_str = status_map.get(status_code, f'STATUS_{status_code}')
+        self._publish_status(status_str)
 
     def cancel_callback(self, msg: Bool):
         """Cancel the active NavigateToPose goal (server-driven pause/cancel)."""
@@ -108,7 +175,7 @@ class RobotActionForwarder(Node):
             self.get_logger().info('📥 CANCEL received but no active goal')
             return
         self.get_logger().info('📥 CANCEL received — cancelling active Nav2 goal')
-        self._publish_status('CANCELLING', 'Cancel requested by operator')
+        self._publish_status_with_code(GoalStatus.STATUS_CANCELED)
         try:
             cancel_future = self.current_goal_handle.cancel_goal_async()
             # The result callback publishes the terminal CANCELLED status once
@@ -116,7 +183,7 @@ class RobotActionForwarder(Node):
             cancel_future.add_done_callback(self._cancel_response_callback)
         except Exception as e:
             self.get_logger().error(f'✗ Cancel failed: {e}')
-            self._publish_status('FAILED', f'Cancel failed: {str(e)[:50]}')
+            self._publish_status_with_code(GoalStatus.STATUS_ABORTED.value)
 
     def _cancel_response_callback(self, future):
         try:
@@ -157,7 +224,7 @@ class RobotActionForwarder(Node):
             return False
         
         self.get_logger().info('✓ Nav2 action server available')
-        self._publish_status('SENDING_GOAL', f'Sending goal ({pose_msg.pose.position.x:.2f}, {pose_msg.pose.position.y:.2f})')
+        self._publish_status_with_code(GoalStatus.STATUS_UNKNOWN)
         
         # Create goal
         goal_msg = NavigateToPose.Goal()
@@ -188,7 +255,7 @@ class RobotActionForwarder(Node):
             whole_second = int(elapsed)
             if elapsed > 1.0 and whole_second != self._last_feedback_second:
                 self._last_feedback_second = whole_second
-                self._publish_status('IN_PROGRESS', f'{elapsed:.1f}s elapsed')
+                self._publish_status_with_code(GoalStatus.STATUS_EXECUTING)
         except Exception as e:
             self.get_logger().debug(f'Feedback error: {e}')
 
@@ -198,18 +265,18 @@ class RobotActionForwarder(Node):
             goal_handle = future.result()
         except Exception as e:
             self.get_logger().error(f'✗ Failed to send goal: {e}')
-            self._publish_status('FAILED', f'Could not send goal: {str(e)[:50]}')
+            self._publish_status_with_code(GoalStatus.STATUS_REJECTED)
             return
 
         if not goal_handle or not goal_handle.accepted:
             self.get_logger().warning('✗ Goal rejected by nav2')
-            self._publish_status('REJECTED', 'Nav2 rejected the goal')
+            self._publish_status_with_code(GoalStatus.STATUS_REJECTED)
             self.current_goal_handle = None
             return
         
         self.current_goal_handle = goal_handle
         self.get_logger().info('✓ Goal accepted by nav2')
-        self._publish_status('ACCEPTED', 'Goal accepted, navigation started')
+        self._publish_status_with_code(GoalStatus.STATUS_UNKNOWN)
         
         # Wait for result
         result_future = goal_handle.get_result_async()
@@ -232,16 +299,16 @@ class RobotActionForwarder(Node):
             # action_msgs/msg/GoalStatus: 4=SUCCEEDED, 5=CANCELED, 6=ABORTED
             if status_code == 4:
                 self.get_logger().info(f'✓ Navigation succeeded in {elapsed:.1f}s')
-                self._publish_status('COMPLETED', f'Goal reached in {elapsed:.1f}s')
+                self._publish_status_with_code(GoalStatus.STATUS_SUCCEEDED)
             elif status_code == 5:
                 self.get_logger().warning(f'Goal cancelled after {elapsed:.1f}s')
-                self._publish_status('CANCELLED', f'Goal cancelled after {elapsed:.1f}s')
+                self._publish_status_with_code(GoalStatus.STATUS_CANCELED)
             elif status_code == 6:
                 self.get_logger().error(f'✗ Goal aborted after {elapsed:.1f}s')
-                self._publish_status('FAILED', f'Navigation aborted after {elapsed:.1f}s')
+                self._publish_status_with_code(GoalStatus.STATUS_ABORTED)
             else:
                 self.get_logger().error(f'✗ Goal ended with unknown status {status_code}')
-                self._publish_status('FAILED', f'Navigation failed (status {status_code})')
+                self._publish_status_with_code(GoalStatus.STATUS_ABORTED)
 
         except Exception as e:
             elapsed = time.time() - self.goal_start_time
