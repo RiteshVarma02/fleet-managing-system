@@ -1,0 +1,77 @@
+name: kumki_bridge
+topics:
+  odom:
+    type: nav_msgs/msg/Odometry
+    from_domain: 7
+    to_domain: 0
+    remap: /kumki/odom
+  scan:
+    type: sensor_msgs/msg/LaserScan
+    from_domain: 7
+    to_domain: 0
+    remap: /kumki/scan
+  amcl_pose:
+    type: geometry_msgs/msg/PoseWithCovarianceStamped
+    from_domain: 7
+    to_domain: 0
+    remap: /kumki/amcl_pose
+  battery_state:
+    type: sensor_msgs/msg/BatteryState
+    from_domain: 7
+    to_domain: 0
+    remap: /kumki/battery_state
+  navigation_status:
+    type: std_msgs/msg/String
+    from_domain: 7
+    to_domain: 0
+    remap: /kumki/navigation_status
+  tf:
+    type: tf2_msgs/msg/TFMessage
+    from_domain: 7
+    to_domain: 0
+    remap: /kumki/tf
+  tf_static:
+    type: tf2_msgs/msg/TFMessage
+    from_domain: 7
+    to_domain: 0
+    remap: /kumki/tf_static
+  map:
+    type: nav_msgs/msg/OccupancyGrid
+    from_domain: 7
+    to_domain: 0
+    remap: /kumki/map
+  kumki/cmd_vel:
+    type: geometry_msgs/msg/Twist
+    from_domain: 0
+    to_domain: 7
+    remap: /cmd_vel
+  kumki/goal_request:
+    type: geometry_msgs/msg/PoseStamped
+    from_domain: 0
+    to_domain: 7
+    remap: /goal_request
+  kumki/goal_cancel:
+    type: std_msgs/msg/Bool
+    from_domain: 0
+    to_domain: 7
+    remap: /goal_cancel
+  kumki/initialpose:
+    type: geometry_msgs/msg/PoseWithCovarianceStamped
+    from_domain: 0
+    to_domain: 7
+    remap: /initialpose
+  kumki/emergency_stop:
+    type: std_msgs/msg/Bool
+    from_domain: 0
+    to_domain: 7
+    remap: /emergency_stop
+  kumki/dock_command:
+    type: std_msgs/msg/String
+    from_domain: 0
+    to_domain: 7
+    remap: /dock_command
+  dock_state:
+    type: std_msgs/msg/String
+    from_domain: 7
+    to_domain: 0
+    remap: /kumki/dock_state

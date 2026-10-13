@@ -1,4 +1,0 @@
-{
-  "robot_id": "riteshslaptop",
-  "timestamp": 1787251673.2047465
-}

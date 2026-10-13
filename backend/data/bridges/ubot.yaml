@@ -1,0 +1,77 @@
+name: ubot_bridge
+topics:
+  odom:
+    type: nav_msgs/msg/Odometry
+    from_domain: 18
+    to_domain: 0
+    remap: /ubot/odom
+  scan:
+    type: sensor_msgs/msg/LaserScan
+    from_domain: 18
+    to_domain: 0
+    remap: /ubot/scan
+  amcl_pose:
+    type: geometry_msgs/msg/PoseWithCovarianceStamped
+    from_domain: 18
+    to_domain: 0
+    remap: /ubot/amcl_pose
+  battery_state:
+    type: sensor_msgs/msg/BatteryState
+    from_domain: 18
+    to_domain: 0
+    remap: /ubot/battery_state
+  navigation_status:
+    type: std_msgs/msg/String
+    from_domain: 18
+    to_domain: 0
+    remap: /ubot/navigation_status
+  tf:
+    type: tf2_msgs/msg/TFMessage
+    from_domain: 18
+    to_domain: 0
+    remap: /ubot/tf
+  tf_static:
+    type: tf2_msgs/msg/TFMessage
+    from_domain: 18
+    to_domain: 0
+    remap: /ubot/tf_static
+  map:
+    type: nav_msgs/msg/OccupancyGrid
+    from_domain: 18
+    to_domain: 0
+    remap: /ubot/map
+  ubot/cmd_vel:
+    type: geometry_msgs/msg/Twist
+    from_domain: 0
+    to_domain: 18
+    remap: /cmd_vel
+  ubot/goal_request:
+    type: geometry_msgs/msg/PoseStamped
+    from_domain: 0
+    to_domain: 18
+    remap: /goal_request
+  ubot/goal_cancel:
+    type: std_msgs/msg/Bool
+    from_domain: 0
+    to_domain: 18
+    remap: /goal_cancel
+  ubot/initialpose:
+    type: geometry_msgs/msg/PoseWithCovarianceStamped
+    from_domain: 0
+    to_domain: 18
+    remap: /initialpose
+  ubot/emergency_stop:
+    type: std_msgs/msg/Bool
+    from_domain: 0
+    to_domain: 18
+    remap: /emergency_stop
+  ubot/gripper_cmd:
+    type: std_msgs/msg/String
+    from_domain: 0
+    to_domain: 18
+    remap: /gripper_cmd
+  arm_state:
+    type: std_msgs/msg/String
+    from_domain: 18
+    to_domain: 0
+    remap: /ubot/arm_state

@@ -1,0 +1,77 @@
+name: something_bridge
+topics:
+  odom:
+    type: nav_msgs/msg/Odometry
+    from_domain: 2
+    to_domain: 0
+    remap: /something/odom
+  scan:
+    type: sensor_msgs/msg/LaserScan
+    from_domain: 2
+    to_domain: 0
+    remap: /something/scan
+  amcl_pose:
+    type: geometry_msgs/msg/PoseWithCovarianceStamped
+    from_domain: 2
+    to_domain: 0
+    remap: /something/amcl_pose
+  battery_state:
+    type: sensor_msgs/msg/BatteryState
+    from_domain: 2
+    to_domain: 0
+    remap: /something/battery_state
+  navigation_status:
+    type: std_msgs/msg/String
+    from_domain: 2
+    to_domain: 0
+    remap: /something/navigation_status
+  tf:
+    type: tf2_msgs/msg/TFMessage
+    from_domain: 2
+    to_domain: 0
+    remap: /something/tf
+  tf_static:
+    type: tf2_msgs/msg/TFMessage
+    from_domain: 2
+    to_domain: 0
+    remap: /something/tf_static
+  map:
+    type: nav_msgs/msg/OccupancyGrid
+    from_domain: 2
+    to_domain: 0
+    remap: /something/map
+  something/cmd_vel:
+    type: geometry_msgs/msg/Twist
+    from_domain: 0
+    to_domain: 2
+    remap: /cmd_vel
+  something/goal_request:
+    type: geometry_msgs/msg/PoseStamped
+    from_domain: 0
+    to_domain: 2
+    remap: /goal_request
+  something/goal_cancel:
+    type: std_msgs/msg/Bool
+    from_domain: 0
+    to_domain: 2
+    remap: /goal_cancel
+  something/initialpose:
+    type: geometry_msgs/msg/PoseWithCovarianceStamped
+    from_domain: 0
+    to_domain: 2
+    remap: /initialpose
+  something/emergency_stop:
+    type: std_msgs/msg/Bool
+    from_domain: 0
+    to_domain: 2
+    remap: /emergency_stop
+  something/gripper_cmd:
+    type: std_msgs/msg/String
+    from_domain: 0
+    to_domain: 2
+    remap: /gripper_cmd
+  arm_state:
+    type: std_msgs/msg/String
+    from_domain: 2
+    to_domain: 0
+    remap: /something/arm_state
