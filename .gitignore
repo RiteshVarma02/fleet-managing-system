@@ -34,5 +34,6 @@ dist-ssr
 .venv
 *.env
 
-*/__pycache__/
+__pycache__/
 *.pyc
+.pytest_cache/
