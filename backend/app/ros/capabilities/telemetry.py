@@ -1,21 +1,32 @@
-"""Battery, lidar and per-robot map — the sensor data almost every robot has."""
+"""Pose (localisation) and battery — the state every robot reports."""
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict
+
+from app.ros.runtime import quaternion_to_yaw
 
 
 class TelemetryCapability:
     name = "telemetry"
 
     def setup_telemetry(self) -> None:
-        self.subscribe("battery_state", self._ros.BatteryState, self._on_battery, qos=10)
-        # Lidar and map are high-bandwidth: keep the queue at 1, best effort.
-        self.subscribe("scan", self._ros.LaserScan, self._on_scan, qos=1, best_effort=True)
-        self.subscribe("map", self._ros.OccupancyGrid, self._on_map, qos=1)
-        self.battery_percentage = 100.0
-        self.current_scan: Optional[Any] = None
-        self.current_map: Optional[Any] = None
+        self.subscribe("pose", self._on_pose)
+        self.subscribe("battery", self._on_battery)
+        self.localized = False
+
+    def _on_pose(self, msg: Any) -> None:
+        pose = msg.pose.pose
+        q = pose.orientation
+        position = {
+            "x": float(pose.position.x),
+            "y": float(pose.position.y),
+            "theta": float(quaternion_to_yaw(q.x, q.y, q.z, q.w)),
+        }
+        with self._state_lock:
+            self.current_position = position
+            self.localized = True
+        self.report_telemetry(position=position)
 
     def _on_battery(self, msg: Any) -> None:
         percentage = float(getattr(msg, "percentage", 0.0) or 0.0)
@@ -27,16 +38,6 @@ class TelemetryCapability:
             self.battery_percentage = percentage
         self.report_telemetry(battery=percentage)
 
-    def _on_scan(self, msg: Any) -> None:
-        # Kept as the latest sample only — never buffered, never persisted.
-        self.current_scan = msg
-
-    def _on_map(self, msg: Any) -> None:
-        self.current_map = msg
-
     def telemetry_snapshot(self) -> Dict[str, Any]:
         with self._state_lock:
-            return {"battery": self.battery_percentage}
-
-    def latest_map(self) -> Optional[Any]:
-        return self.current_map
+            return {"localized": self.localized}

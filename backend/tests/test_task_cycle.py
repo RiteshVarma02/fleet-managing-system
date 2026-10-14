@@ -18,20 +18,26 @@ from app.services import task_service as ts
 
 
 class FakeNav:
-    def __init__(self) -> None:
-        self.goals: List[tuple] = []
-        self.epoch = 0
+    """Stands in for a waypoint_nav controller that arrives instantly."""
 
-    def send_nav2_goal(self, x, y, theta=0.0):
+    def __init__(self) -> None:
+        self.goals: List[str] = []
+        self.epoch = 0
+        self.hold = None
+
+    def send_waypoint(self, name):
         self.epoch += 1
-        self.goals.append((x, y))
+        self.goals.append(name)
         return True, "ok"
 
     def get_nav_status(self) -> Dict[str, Any]:
         return {"epoch": self.epoch, "status": "succeeded"}
 
-    def cancel_nav_goal(self) -> None:
+    def abort_waypoint(self, message="") -> None:
         pass
+
+    def safety_hold(self):
+        return self.hold
 
 
 def test_status_value_accepts_enum_and_str():
@@ -79,8 +85,39 @@ def test_pickdrop_runs_all_legs(monkeypatch):
     engine = ts.TaskEngine()
     asyncio.run(engine._run("t1", "robot_1"))
 
-    assert nav.goals == [(1.0, 1.0), (2.0, 2.0), (1.0, 1.0), (2.0, 2.0)]
+    assert nav.goals == ["PICKUP", "DROP", "PICKUP", "DROP"]
     assert state["status"] == "completed"
     assert state["completed_repeats"] == 2
     assert cleared == ["robot_1"]
-    assert ("running", "Navigating to DROP") in history
+    assert ("running", "Going to DROP") in history
+
+
+def test_estop_pauses_the_leg_instead_of_failing(monkeypatch):
+    nav = FakeNav()
+    nav.hold = "Physical E-stop pressed"
+    history: List[tuple] = []
+
+    async def append_history(db, tid, status, msg=None):
+        history.append(msg)
+
+    monkeypatch.setattr(ts.tasks_repo, "append_history", append_history)
+    monkeypatch.setattr(ts.robot_service, "require_controller", lambda *a, **k: nav)
+
+    engine = ts.TaskEngine()
+    with pytest.raises(ts._TaskPaused, match="Physical E-stop pressed"):
+        asyncio.run(engine._drive_to(None, "t1", "robot_1", {"name": "WP_1"}))
+    assert nav.goals == []  # nothing dispatched while the button is pressed
+    assert engine._pause_flags["t1"] is True
+
+
+def test_resume_is_refused_while_estop_is_held(monkeypatch):
+    nav = FakeNav()
+    nav.hold = "Physical E-stop pressed"
+    monkeypatch.setattr(ts.robot_service, "require_controller", lambda *a, **k: nav)
+
+    engine = ts.TaskEngine()
+    engine._pause_flags["t1"] = True
+    engine._progress["t1"] = {"robot_id": "robot_1"}
+    with pytest.raises(ts.ConflictError, match="E-stop"):
+        asyncio.run(engine.resume_task(None, "t1"))
+    assert engine._pause_flags["t1"] is True  # still paused

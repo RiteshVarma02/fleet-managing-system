@@ -13,7 +13,7 @@ from app.core.logging_config import get_logger
 from app.ros.capabilities import CAPABILITY_REGISTRY
 from app.ros.common_controller import build_base_controller_class
 from app.ros.runtime import RosModules
-from app.ros.topics_registry import DEFAULT_ROBOT_TYPE, capabilities_for, is_known_type
+from app.ros.topics_registry import capabilities_for, default_robot_type, is_known_type
 
 logger = get_logger(__name__)
 
@@ -26,6 +26,7 @@ class RobotFactory:
 
     def bind(self, ros: RosModules) -> None:
         with self._lock:
+            # Also called after a topic-config reload: rebuild every class.
             self._base = build_base_controller_class(ros)
             self._classes.clear()
 
@@ -34,7 +35,7 @@ class RobotFactory:
             raise RuntimeError("RobotFactory.bind() must be called after rclpy init")
 
         # An unknown type falls back to the default rather than failing connect.
-        resolved_type = robot_type if is_known_type(robot_type) else DEFAULT_ROBOT_TYPE
+        resolved_type = robot_type if is_known_type(robot_type) else default_robot_type()
 
         with self._lock:
             cached = self._classes.get(resolved_type)

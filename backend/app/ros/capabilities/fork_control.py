@@ -12,8 +12,8 @@ class ForkControlCapability:
     MAX_HEIGHT_M = 3.0
 
     def setup_fork_control(self) -> None:
-        self._fork_pub = self.publisher("fork_command", self._ros.Float32)
-        self.subscribe("fork_height", self._ros.Float32, self._on_fork_height, qos=10)
+        self._fork_pub = self.publisher("fork_command")
+        self.subscribe("fork_height", self._on_fork_height)
         self.fork_height: Optional[float] = None
 
     def _on_fork_height(self, msg: Any) -> None:
@@ -23,7 +23,7 @@ class ForkControlCapability:
         """Clamp then publish. Returns the commanded height."""
         target = max(self.MIN_HEIGHT_M, min(self.MAX_HEIGHT_M, float(height_m)))
         if self._fork_pub is not None:
-            msg = self._ros.Float32()
+            msg = self.msg("fork_command")
             msg.data = target
             self._fork_pub.publish(msg)
         return target
@@ -33,3 +33,6 @@ class ForkControlCapability:
 
     def lower(self) -> float:
         return self.set_fork_height(self.MIN_HEIGHT_M)
+
+    def fork_control_snapshot(self):
+        return {"fork_height": self.fork_height}

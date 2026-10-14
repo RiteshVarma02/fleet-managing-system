@@ -4,21 +4,15 @@ from __future__ import annotations
 
 import base64
 import io
-import os
-import shutil
-import signal
-import subprocess
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.core.config import settings
-from app.core.exceptions import ConflictError, NotFoundError, ValidationError
+from app.core.exceptions import NotFoundError, ValidationError
 from app.core.logging_config import get_logger
 from app.db.repositories import map_state_repo, maps_repo
-from app.ros.manager import ros_manager
-from app.ros.map_publisher import build_occupancy_grid
 
 logger = get_logger(__name__)
 
@@ -50,7 +44,6 @@ def _map_yaml(name: str, metadata: Dict[str, Any]) -> str:
 class MapService:
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._slam_process: Optional[subprocess.Popen] = None
         self._current_map: Optional[Dict[str, Any]] = None
         self._active_name: Optional[str] = None
 
@@ -122,82 +115,6 @@ class MapService:
                     name, metadata["resolution"], metadata["origin_x"], metadata["origin_y"])
         return result
 
-    async def promote_robot_map(self, db, robot_id: str, map_name: Optional[str] = None) -> Dict[str, Any]:
-        """Make a robot's own SLAM grid the active fleet map.
-
-        The grid is captured straight from the controller's telemetry
-        (no map_saver_cli involved), saved as a PNG on disk, published to ROS
-        and recorded as the active map with `source="robot"`.
-        """
-        from app.services.robot_service import latest_map
-
-        grid = latest_map(robot_id)
-        if grid is None:
-            raise NotFoundError(f"Robot '{robot_id}' has no map yet")
-
-        from app.ros.map_publisher import occupancy_grid_to_image
-
-        image, metadata = occupancy_grid_to_image(grid)
-        name = (map_name or f"{robot_id}_map").strip()
-        target = _safe_path(settings.maps_dir, f"{name}.png")
-        image.save(target, format="PNG")
-
-        result = self._publish_and_cache(name, image, metadata, target)
-        await maps_repo.upsert(
-            db,
-            name=name,
-            metadata=metadata,
-            source="robot",
-            file_path=str(target),
-        )
-        await map_state_repo.set(
-            db, name=name, metadata=metadata, source="robot", robot_id=robot_id
-        )
-        logger.info("Promoted robot map for %s as '%s'", robot_id, name)
-        return result
-
-    async def save_from_robot(self, db, robot_id: str, filename: str) -> Dict[str, Any]:
-        """Persist a robot's captured grid as a .pgm/.yaml/.png map set.
-
-        Written straight from the controller's OccupancyGrid — this is the
-        build-map flow, so `map_saver_cli` is not involved. Unlike promote, this
-        only saves the files: activation is an explicit follow-up step.
-        """
-        from app.services.robot_service import latest_map
-
-        grid = latest_map(robot_id)
-        if grid is None:
-            raise NotFoundError(f"Robot '{robot_id}' has no map yet")
-
-        from app.ros.map_publisher import occupancy_grid_to_image
-
-        image, metadata = occupancy_grid_to_image(grid)
-        name = Path(filename).stem
-        base = _safe_path(settings.maps_dir, f"{name}.pgm")
-
-        pgm_buffer = io.BytesIO()
-        image.save(pgm_buffer, format="PPM")  # P5 binary PGM for mode "L"
-        base.write_bytes(pgm_buffer.getvalue())
-
-        png_buffer = io.BytesIO()
-        image.save(png_buffer, format="PNG")
-        png_path = base.with_suffix(".png")
-        png_path.write_bytes(png_buffer.getvalue())
-        encoded = base64.b64encode(png_buffer.getvalue()).decode("ascii")
-
-        base.with_suffix(".yaml").write_text(_map_yaml(name, metadata), encoding="utf-8")
-
-        await maps_repo.upsert(
-            db,
-            name=name,
-            metadata=metadata,
-            source="robot",
-            file_path=str(png_path),
-            image_base64=encoded,
-        )
-        logger.info("Saved map from robot %s as '%s'", robot_id, name)
-        return {"name": name, "metadata": dict(metadata), "image": encoded}
-
     async def restore_active_map(self, db) -> Optional[Dict[str, Any]]:
         """Startup restore: republish the persisted active map (best effort)."""
         state = await map_state_repo.get(db)
@@ -234,21 +151,12 @@ class MapService:
 
     def _publish_and_cache(self, name: str, image: Any, metadata: Dict[str, Any],
                            path: Path) -> Dict[str, Any]:
-        """Build the grid, publish it and cache the PNG + metadata in memory."""
+        """Cache the PNG + metadata in memory for the dashboard.
+
+        V1: robots keep their own copy of the single fleet map (delivered via
+        fleet file sync), so nothing is published on ROS here.
+        """
         published = False
-        if ros_manager.available:
-            try:
-                grid = build_occupancy_grid(
-                    ros_manager.require_ros(),
-                    image,
-                    metadata["resolution"],
-                    metadata["origin_x"],
-                    metadata["origin_y"],
-                )
-                ros_manager.publish_map(grid)
-                published = True
-            except Exception as exc:  # pragma: no cover - ROS runtime issues
-                logger.error("Map publish failed: %s", exc)
 
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
@@ -336,74 +244,9 @@ class MapService:
                 self._active_name = None
                 self._current_map = None
 
-    # ---------------- SLAM ----------------
-    def start_slam(self, robot_id: str, map_name: Optional[str] = None) -> Dict[str, Any]:
-        with self._lock:
-            if self._slam_process and self._slam_process.poll() is None:
-                raise ConflictError("SLAM is already running")
-
-            executable = settings.slam_launch_command[0]
-            if shutil.which(executable) is None:
-                raise ConflictError(f"'{executable}' is not available on this host")
-
-            command = [*settings.slam_launch_command, f"namespace:={robot_id}"]
-            logger.info("Starting SLAM: %s", " ".join(command))
-            # start_new_session so we can signal the whole launch process group.
-            self._slam_process = subprocess.Popen(
-                command,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-            return {"pid": self._slam_process.pid, "map_name": map_name, "robot_id": robot_id}
-
-    def stop_slam(self) -> bool:
-        with self._lock:
-            process = self._slam_process
-            self._slam_process = None
-        if process is None or process.poll() is not None:
-            return False
-        try:
-            os.killpg(os.getpgid(process.pid), signal.SIGINT)
-            process.wait(timeout=10)
-        except (subprocess.TimeoutExpired, ProcessLookupError, PermissionError):
-            try:
-                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):  # pragma: no cover
-                pass
-        return True
-
-    def slam_running(self) -> bool:
-        with self._lock:
-            return bool(self._slam_process and self._slam_process.poll() is None)
-
-    def save_map(self, filename: str) -> Dict[str, Any]:
-        executable = settings.map_saver_command[0]
-        if shutil.which(executable) is None:
-            raise ConflictError(f"'{executable}' is not available on this host")
-
-        target = _safe_path(settings.maps_dir, filename)
-        command = [*settings.map_saver_command, "-f", str(target)]
-        try:
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                timeout=settings.map_save_timeout_seconds,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise ConflictError("Map save timed out") from exc
-
-        if result.returncode != 0:
-            raise ConflictError(f"Map save failed: {result.stderr.strip()[:500]}")
-        return {"filename": f"{target.name}.yaml", "path": f"{target}.yaml"}
-
     def shutdown(self) -> None:
-        try:
-            self.stop_slam()
-        except Exception:  # pragma: no cover
-            pass
+        """Nothing to stop: V1 has no SLAM process and no ROS map publisher."""
+        return None
 
 
 map_service = MapService()

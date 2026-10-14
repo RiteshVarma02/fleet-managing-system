@@ -1,6 +1,6 @@
 """OccupancyGrid <-> grayscale image conversion tests.
 
-Covers the two conversion functions in `app/ros/map_publisher.py`:
+Covers the two conversion functions in `app/ros/map_codec.py`:
 `build_occupancy_grid` (image -> grid) and `occupancy_grid_to_image`
 (grid -> image). The inverse-mapping and the bottom-up/top-down row flip must
 round-trip exactly so a map saved from a robot and re-published look identical.
@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from app.ros.map_publisher import build_occupancy_grid, occupancy_grid_to_image
+from app.ros.map_codec import build_occupancy_grid, occupancy_grid_to_image
 
 # Classes in a nav_msgs/OccupancyGrid: 0 free, 100 occupied, -1 unknown.
 FREE = 0

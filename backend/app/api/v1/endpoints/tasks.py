@@ -254,7 +254,7 @@ async def pause_task(
     db: AsyncIOMotorDatabase = Depends(get_db),
     _: Principal = Depends(require_operator),
 ):
-    """Stop the robot mid-leg (Nav2 action cancelled); resume re-issues the goal."""
+    """Halt the robot mid-leg (empty route); resume re-sends the same waypoint."""
     progress = await task_engine.pause_task(db, task_id)
     return DataResponse(data=progress)
 

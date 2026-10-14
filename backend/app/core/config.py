@@ -68,11 +68,11 @@ class Settings(BaseSettings):
 
     # --- ROS 2 -------------------------------------------------------------
     ros_enabled: bool = True
-    ros_domain_id: int = 0  # the server/fleet domain
-    map_topic: str = "/map"
-    map_publish_interval_seconds: float = 1.0
-    registration_topic: str = "/robot/register"
-    registration_response_topic: str = "/robot/register/response"
+    # V1: the whole fleet shares ONE ROS domain. Robots are separated by
+    # namespace (/{robot}/...), not by domain.
+    ros_domain_id: int = 0
+    # Every topic name/type lives in this file — nothing is hard-coded.
+    fleet_topics_file: Path = Field(default=BASE_DIR / "config" / "fleet_topics.yaml")
     autostart_robot_controllers: bool = True
 
     # --- Telemetry write-behind (server load control) ----------------------
@@ -82,37 +82,19 @@ class Settings(BaseSettings):
     telemetry_ws_interval_seconds: float = 0.5
     telemetry_stale_after_seconds: float = 15.0
 
-    # --- Domain bridge -----------------------------------------------------
-    # Each robot lives on its own ROS_DOMAIN_ID; `domain_bridge` moves topics
-    # between the robot domain and the server domain.
-    domain_bridge_enabled: bool = True
-    domain_bridge_command: List[str] = Field(
-        default_factory=lambda: ["ros2", "run", "domain_bridge", "domain_bridge"]
-    )
-    domain_bridge_config_dir: Path = Field(default=BASE_DIR / "data" / "bridges")
-    domain_bridge_restart_backoff_seconds: float = 5.0
-    domain_bridge_max_restarts: int = 10
-    # Fallback domain assigned to an approved robot that reports none.
-    domain_bridge_default_robot_domain: int = 2
-
-    # --- Navigation / tasks -------------------------------------------------
+    # --- Waypoint navigation / tasks ----------------------------------------
+    # A leg with no arrival after this long fails (also catches a stopped
+    # traffic_manager_node, which makes route_manager wait forever).
     nav_goal_timeout_seconds: float = 300.0
-    nav_poll_interval_seconds: float = 1.0
+    nav_poll_interval_seconds: float = 0.5
+    # `final_goal_reached` carries no goal id: a TRUE arriving this soon after a
+    # new goal is treated as a late message from the previous leg and ignored.
+    waypoint_arrival_debounce_seconds: float = 1.5
     max_task_repeats: int = 1000
     task_max_concurrent: int = 32
-    slam_launch_command: List[str] = Field(
-        default_factory=lambda: ["ros2", "launch", "slam_toolbox", "online_async_launch.py"]
-    )
-    map_saver_command: List[str] = Field(
-        default_factory=lambda: ["ros2", "run", "nav2_map_server", "map_saver_cli"]
-    )
-    map_save_timeout_seconds: int = 30
 
     @field_validator(
         "cors_origins",
-        "slam_launch_command",
-        "map_saver_command",
-        "domain_bridge_command",
         mode="before",
     )
     @classmethod
@@ -142,7 +124,7 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     settings = Settings()
-    for directory in (settings.data_dir, settings.maps_dir, settings.domain_bridge_config_dir):
+    for directory in (settings.data_dir, settings.maps_dir):
         directory.mkdir(parents=True, exist_ok=True)
     if settings.is_production and settings.jwt_secret == "change-me-in-production":
         raise RuntimeError("JWT_SECRET must be set in production")

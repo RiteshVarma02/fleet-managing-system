@@ -15,7 +15,7 @@ from app.db.documents import RobotStatus
 from app.db.mongo import get_database
 from app.db.repositories import robot_registrations_repo, robots_repo
 from app.ros.manager import ros_manager
-from app.ros.topics_registry import DEFAULT_ROBOT_TYPE
+from app.ros.topics_registry import default_robot_type
 
 logger = get_logger(__name__)
 
@@ -34,13 +34,10 @@ async def handle_registration(
             robot_id,
             hostname=hostname,
             ip_address=ip_address,
-            status=RobotStatus.online,
+            status=RobotStatus.idle,
         )
         started, message = ros_manager.start_controller(
-            robot_id,
-            str(robot.get("robot_type") or DEFAULT_ROBOT_TYPE),
-            robot.get("ros_domain_id"),
-            share_map=bool(robot.get("map_share_enabled")),
+            robot_id, str(robot.get("robot_type") or default_robot_type())
         )
         if not started:
             logger.warning("Controller not started for %s: %s", robot_id, message)

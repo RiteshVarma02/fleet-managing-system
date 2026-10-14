@@ -17,10 +17,16 @@ class Role(str, Enum):
 
 
 class RobotStatus(str, Enum):
-    online = "online"
+    """Derived by `services.robot_status.derive_status` — never set by hand."""
+
     offline = "offline"
+    idle = "idle"
+    moving = "moving"
+    paused = "paused"
+    awaiting_approval = "awaiting_approval"
+    stop_active = "stop_active"
+    e_stopped = "e_stopped"
     error = "error"
-    busy = "busy"
 
 
 class RegistrationStatus(str, Enum):

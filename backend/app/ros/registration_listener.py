@@ -12,9 +12,9 @@ import json
 import re
 from typing import Any, Callable, Dict, Optional
 
-from app.core.config import settings
 from app.core.logging_config import get_logger
-from app.ros.runtime import RosModules
+from app.ros.runtime import RosModules, message_class, qos_profile
+from app.ros.topics_registry import topic_registry
 
 logger = get_logger(__name__)
 
@@ -37,14 +37,23 @@ def build_registration_listener_class(ros: RosModules):
         def __init__(self, handle: RegistrationHandler) -> None:
             super().__init__("registration_listener")
             self._handle = handle
-            self.create_subscription(ros.String, settings.registration_topic, self._on_message, 10)
-            self._response_pub = self.create_publisher(
-                ros.String, settings.registration_response_topic, 10
+            request = topic_registry.fleet_topic("registration")
+            response = topic_registry.fleet_topic("registration_response")
+            self._topic_name = request["name"]
+            self._response_cls = message_class(response["type"])
+            self.create_subscription(
+                message_class(request["type"]),
+                request["name"],
+                self._on_message,
+                qos_profile(ros, request["qos"]),
             )
-            logger.info("Registration listener active on %s", settings.registration_topic)
+            self._response_pub = self.create_publisher(
+                self._response_cls, response["name"], qos_profile(ros, response["qos"])
+            )
+            logger.info("Registration listener active on %s", request["name"])
 
         def _respond(self, payload: Dict[str, Any]) -> None:
-            msg = ros.String()
+            msg = self._response_cls()
             msg.data = json.dumps(payload, default=str)
             self._response_pub.publish(msg)
 
@@ -52,7 +61,7 @@ def build_registration_listener_class(ros: RosModules):
             try:
                 data = json.loads(getattr(msg, "data", "") or "")
             except (json.JSONDecodeError, TypeError):
-                logger.error("Invalid JSON on %s: %r", settings.registration_topic, msg.data)
+                logger.error("Invalid JSON on %s: %r", self._topic_name, msg.data)
                 return
             if not isinstance(data, dict):
                 return

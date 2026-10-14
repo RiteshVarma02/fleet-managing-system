@@ -4,9 +4,11 @@ Responsibilities:
 * `rclpy.init` / `shutdown` exactly once
 * one `MultiThreadedExecutor` per node group, spun on daemon threads
 * the registry of per-robot controllers (thread-safe), composed by
-  `robot_factory` from the capabilities declared in `topics_registry`
-* the per-robot `domain_bridge` processes (cross-domain transport)
-* the shared emergency-stop and map publisher nodes
+  `robot_factory` from the capabilities declared in `config/fleet_topics.yaml`
+* the shared emergency-stop node (works even when no controller is attached)
+
+V1: every robot is on the same ROS domain, namespaced as /{robot}/...; there
+is no domain_bridge and no server-side /map publisher.
 
 Nothing else in the codebase touches `rclpy` state directly.
 """
@@ -19,12 +21,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from app.core.config import settings
 from app.core.exceptions import RosUnavailableError
 from app.core.logging_config import get_logger
-from app.ros.domain_bridge import domain_bridge_manager
-from app.ros.map_publisher import MapPublisher
 from app.ros.registration_listener import build_registration_listener_class
 from app.ros.robot_factory import robot_factory
-from app.ros.runtime import RosModules, load_ros, ros_error
-from app.ros.topics_registry import DEFAULT_ROBOT_TYPE
+from app.ros.runtime import RosModules, load_ros, message_class, qos_profile, ros_error
+from app.ros.topics_registry import default_robot_type, topic_registry
 
 logger = get_logger(__name__)
 
@@ -69,8 +69,6 @@ class RosManager:
 
         self._emergency_runner: Optional[_NodeRunner] = None
         self._emergency_publishers: Dict[str, Any] = {}
-        self._map_runner: Optional[_NodeRunner] = None
-        self._map_publisher: Optional[MapPublisher] = None
         self._registration_runner: Optional[_NodeRunner] = None
         self._registration_cls: Optional[type] = None
 
@@ -111,11 +109,11 @@ class RosManager:
             emergency_node = ros.rclpy.create_node("emergency_publisher_node")
             self._emergency_runner = _NodeRunner(ros, emergency_node, "emergency")
 
-            map_node = ros.rclpy.create_node("map_publisher_node")
-            self._map_runner = _NodeRunner(ros, map_node, "map")
-            self._map_publisher = MapPublisher(ros, map_node)
-
-            logger.info("ROS 2 runtime initialised (server domain=%s)", settings.ros_domain_id)
+            logger.info(
+                "ROS 2 runtime initialised (fleet domain=%s, topics=%s)",
+                settings.ros_domain_id,
+                topic_registry.path,
+            )
             return True
 
     def start_registration_listener(
@@ -128,19 +126,29 @@ class RosManager:
             node = self._registration_cls(handle=handle)  # type: ignore[misc]
             self._registration_runner = _NodeRunner(self._ros, node, "registration")
 
+    def reload_topics(self) -> Dict[str, Any]:
+        """Re-read fleet_topics.yaml. Connected robots pick it up on reconnect."""
+        from app.ros.topics_registry import topic_registry as registry
+
+        with self._lock:
+            config = registry.reload()
+            if self._ros is not None:
+                robot_factory.bind(self._ros)
+            return {
+                "path": str(registry.path),
+                "robot_types": sorted(config["robot_types"]),
+                "reconnect_required": sorted(self._controllers),
+            }
+
     def shutdown(self) -> None:
         with self._lock:
             for robot_id in list(self._runners):
                 self.stop_controller(robot_id)
-            if self._map_publisher:
-                self._map_publisher.stop()
-            for runner in (self._registration_runner, self._map_runner, self._emergency_runner):
+            for runner in (self._registration_runner, self._emergency_runner):
                 if runner:
                     runner.shutdown()
-            self._registration_runner = self._map_runner = self._emergency_runner = None
+            self._registration_runner = self._emergency_runner = None
             self._emergency_publishers.clear()
-
-            domain_bridge_manager.shutdown()
 
             if self._ros is not None:
                 try:
@@ -154,36 +162,14 @@ class RosManager:
     # ------------------------------------------------------------------
     # controllers
     # ------------------------------------------------------------------
-    def start_controller(
-        self,
-        robot_id: str,
-        robot_type: str = DEFAULT_ROBOT_TYPE,
-        ros_domain_id: Optional[int] = None,
-        *,
-        share_map: bool = False,
-    ) -> Tuple[bool, str]:
-        """Start the per-robot controller node and its domain bridge.
-
-        `share_map` forwards the fleet's active `/map` down to the robot's Nav2;
-        it is threaded through to the bridge so a (re)connect honours the robot's
-        stored `map_share_enabled` flag instead of silently dropping the topic.
-        """
+    def start_controller(self, robot_id: str, robot_type: Optional[str] = None) -> Tuple[bool, str]:
+        """Start the per-robot controller node (topics from fleet_topics.yaml)."""
+        robot_type = robot_type or default_robot_type()
         with self._lock:
             if robot_id in self._controllers:
                 return True, "Already connected"
             if self._ros is None:
                 return False, ros_error() or "ROS 2 runtime unavailable"
-
-            # The bridge must exist before the controller subscribes, otherwise
-            # the first samples from the robot domain are dropped.
-            try:
-                bridge = domain_bridge_manager.ensure(
-                    robot_id, robot_type, ros_domain_id, share_map=share_map
-                )
-                logger.info("Bridge for %s: %s", robot_id, bridge)
-            except Exception as exc:  # pragma: no cover - host dependent
-                logger.error("Domain bridge setup failed for %s: %s", robot_id, exc)
-
             try:
                 controller = robot_factory.create(robot_id, robot_type)
                 self._runners[robot_id] = _NodeRunner(self._ros, controller, robot_id)
@@ -207,7 +193,6 @@ class RosManager:
             pass
         if runner is not None:
             runner.shutdown()
-        domain_bridge_manager.stop(robot_id)
         logger.info("Controller stopped for %s", robot_id)
         return True, "Disconnected"
 
@@ -219,39 +204,12 @@ class RosManager:
         with self._lock:
             return list(self._controllers)
 
-    def bridge_status(self) -> List[Dict[str, Any]]:
-        return domain_bridge_manager.status()
-
-    def configure_bridge(
-        self,
-        robot_id: str,
-        robot_type: str,
-        ros_domain_id: Optional[int],
-        *,
-        share_map: bool = False,
-    ) -> Any:
-        """Write a robot's bridge YAML without touching the running process."""
-        return domain_bridge_manager.configure(
-            robot_id, robot_type, ros_domain_id, share_map=share_map
-        )
-
-    def reconfigure_bridge(
-        self,
-        robot_id: str,
-        robot_type: str,
-        ros_domain_id: Optional[int],
-        *,
-        share_map: bool = False,
-    ) -> Dict[str, Any]:
-        """Regenerate a robot's bridge YAML and restart its bridge process."""
-        return domain_bridge_manager.reconfigure(
-            robot_id, robot_type, ros_domain_id, share_map=share_map
-        )
-
     # ------------------------------------------------------------------
     # shared publishers
     # ------------------------------------------------------------------
-    def publish_emergency(self, robot_id: str, value: bool = True) -> None:
+    def publish_emergency(
+        self, robot_id: str, value: bool = True, robot_type: Optional[str] = None
+    ) -> None:
         """Emergency stop must work even when no controller is attached."""
         ros = self.require_ros()
         rid = str(robot_id).strip()
@@ -261,22 +219,20 @@ class RosManager:
         with self._lock:
             if self._emergency_runner is None:
                 raise RosUnavailableError()
-            publisher = self._emergency_publishers.get(rid)
+            spec = topic_registry.topic(robot_type or default_robot_type(), rid, "emergency_stop")
+            if spec is None:
+                raise ValueError("Robot type has no 'emergency_stop' topic configured")
+            publisher = self._emergency_publishers.get(spec["name"])
             if publisher is None:
                 publisher = self._emergency_runner.node.create_publisher(
-                    ros.Bool, f"/{rid}/emergency_stop", 10
+                    message_class(spec["type"]), spec["name"], qos_profile(ros, spec["qos"])
                 )
-                self._emergency_publishers[rid] = publisher
+                self._emergency_publishers[spec["name"]] = publisher
 
-        msg = ros.Bool()
+        msg = message_class(spec["type"])()
         msg.data = bool(value)
         publisher.publish(msg)
-        logger.info("Published emergency=%s to /%s/emergency_stop", msg.data, rid)
-
-    def publish_map(self, grid: Any) -> None:
-        if self._map_publisher is None:
-            raise RosUnavailableError()
-        self._map_publisher.set_grid(grid)
+        logger.info("Published emergency=%s to %s", msg.data, spec["name"])
 
 
 ros_manager = RosManager()

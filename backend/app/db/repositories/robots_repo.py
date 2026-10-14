@@ -20,16 +20,14 @@ def _col(db: AsyncIOMotorDatabase):
 
 DEFAULTS: Dict[str, Any] = {
     "display_name": "",
-    "robot_type": "differential_drive",
+    "robot_type": None,  # None -> default_robot_type from fleet_topics.yaml
     "status": RobotStatus.offline.value,
-    "battery_percentage": 100.0,
+    "battery_percentage": None,
     "last_position": {"x": 0.0, "y": 0.0, "theta": 0.0},
     "mac_address": None,
     "hostname": None,
     "ip_address": None,
-    "ros_domain_id": None,
     "approved": False,
-    "map_share_enabled": False,
     "active_map_id": None,
     "is_deleted": False,
 }
@@ -155,36 +153,3 @@ async def next_robot_id(db) -> str:
         if match:
             highest = max(highest, int(match.group(1)))
     return f"robot_{highest + 1}"
-
-
-async def used_domains(db) -> List[Dict[str, Any]]:
-    """ROS domains held by live robots, as `{domain, robot_id}` sorted by domain."""
-    cursor = _col(db).find(
-        {"ros_domain_id": {"$ne": None}, "is_deleted": False},
-        {"ros_domain_id": 1, "robot_id": 1},
-    )
-    rows = [
-        {"domain": int(doc["ros_domain_id"]), "robot_id": str(doc["robot_id"])}
-        for doc in await cursor.to_list(length=5000)
-    ]
-    rows.sort(key=lambda item: item["domain"])
-    return rows
-
-
-async def next_domain_id(
-    db, *, start: int, reserved: Optional[Iterable[int]] = None
-) -> int:
-    """Lowest free ROS domain id at or above `start` (bridge assignment).
-
-    Soft-deleted robots do not hold their domain (so it can be reused) and the
-    server's own domain is always excluded via `reserved`.
-    """
-    cursor = _col(db).find(
-        {"ros_domain_id": {"$ne": None}, "is_deleted": False}, {"ros_domain_id": 1}
-    )
-    used = {int(doc["ros_domain_id"]) for doc in await cursor.to_list(length=5000)}
-    used.update(int(d) for d in (reserved or ()) if d is not None)
-    domain = start
-    while domain in used:
-        domain += 1
-    return domain

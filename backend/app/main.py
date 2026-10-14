@@ -43,6 +43,7 @@ async def lifespan(_: FastAPI):
     await robots_repo.mark_all_offline(db)
 
     # The bus must drain before any ROS callback can publish into it.
+    telemetry_bus.set_status_provider(robot_service.status_of)
     await telemetry_bus.start()
 
     if ros_manager.start():
@@ -61,7 +62,7 @@ async def lifespan(_: FastAPI):
 
     await task_engine.start()
 
-    # Best effort: restore the persisted active map and republish to ROS.
+    # Best effort: restore the persisted active fleet map (served to the UI).
     try:
         await map_service.restore_active_map(db)
     except Exception as exc:  # pragma: no cover - startup resilience

@@ -10,14 +10,18 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.common import Position, Velocity
 
-ROBOT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# robot_id IS the ROS namespace (/{robot_id}/amr/goal …), so it must be a
+# valid ROS name segment: letter first, then letters/digits/underscore.
+ROBOT_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$")
 
 
 def validate_robot_id(value: str) -> str:
     value = value.strip()
     if not ROBOT_ID_RE.match(value):
-        raise ValueError("robot_id must be 1-64 chars of letters, digits, '-' or '_'")
+        raise ValueError(
+            "robot_id must be a ROS namespace: start with a letter, then letters, digits or '_'"
+        )
     return value
 
 
@@ -32,12 +36,6 @@ class MoveCommand(RobotIdBody):
     angular: float = Field(ge=-5.0, le=5.0)
 
 
-class PoseCommand(RobotIdBody):
-    x: float
-    y: float
-    theta: float = 0.0
-
-
 class DockCommand(RobotIdBody):
     command: str = Field(pattern="^(dock|undock)$")
 
@@ -48,16 +46,6 @@ class ForkCommand(RobotIdBody):
 
 class GripperCommand(RobotIdBody):
     command: str = Field(pattern="^(open|close|home)$")
-
-
-class MapShareCommand(BaseModel):
-    """Toggle forwarding the fleet's active `/map` down to this robot.
-
-    `robot_id` lives in the URL path; the body only carries the flag so a
-    mismatched body field can never target a different robot than the path.
-    """
-
-    enabled: bool = False
 
 
 class RobotOut(BaseModel):
@@ -71,11 +59,10 @@ class RobotOut(BaseModel):
     mac_address: Optional[str] = None
     hostname: Optional[str] = None
     ip_address: Optional[str] = None
-    ros_domain_id: Optional[int] = None
     approved: bool = False
     connected: bool = False
-    map_available: bool = False
-    map_share_enabled: bool = False
+    stop_active: bool = False
+    emergency_active: bool = False
     active_task_id: Optional[str] = None
     last_seen_at: Optional[datetime] = None
 
@@ -87,15 +74,15 @@ class RobotOut(BaseModel):
         connected: bool = False,
         capabilities: Optional[List[str]] = None,
         live: Optional[Dict[str, Any]] = None,
-        map_available: bool = False,
+        status: Optional[str] = None,
     ) -> "RobotOut":
         position = (live or {}).get("position") or doc.get("last_position") or {}
         battery = (live or {}).get("battery")
         return cls(
             id=str(doc.get("robot_id")),
             name=str(doc.get("display_name") or doc.get("robot_id")),
-            type=str(doc.get("robot_type") or "differential_drive"),
-            status=str((live or {}).get("status") or doc.get("status") or "offline"),
+            type=str(doc.get("robot_type") or ""),
+            status=str(status or doc.get("status") or "offline"),
             battery=float(
                 battery if battery is not None else doc.get("battery_percentage") or 0.0
             ),
@@ -104,11 +91,10 @@ class RobotOut(BaseModel):
             mac_address=doc.get("mac_address"),
             hostname=doc.get("hostname"),
             ip_address=doc.get("ip_address"),
-            ros_domain_id=doc.get("ros_domain_id"),
             approved=bool(doc.get("approved")),
             connected=connected,
-            map_available=map_available,
-            map_share_enabled=bool(doc.get("map_share_enabled")),
+            stop_active=bool((live or {}).get("stop_active")),
+            emergency_active=bool((live or {}).get("emergency_active")),
             active_task_id=doc.get("active_task_id"),
             last_seen_at=doc.get("last_seen_at"),
         )
@@ -117,15 +103,19 @@ class RobotOut(BaseModel):
 class RobotTelemetryOut(BaseModel):
     robot_id: str
     connected: bool = False
+    status: str = "offline"
     position: Position = Position()
     velocity: Velocity = Velocity()
-    battery: float = 0.0
+    battery: Optional[float] = None
     nav: Optional[Dict[str, Any]] = None
     dock_state: Optional[str] = None
     fork_height: Optional[float] = None
     arm_state: Optional[str] = None
     emergency_active: bool = False
+    stop_active: bool = False
+    safety_hold: Optional[str] = None
     capabilities: List[str] = []
+    topics: Dict[str, str] = {}
 
 
 class MacAddressBody(BaseModel):
@@ -143,8 +133,23 @@ class MacAddressBody(BaseModel):
 class RobotApproveRequest(MacAddressBody):
     custom_name: str = Field(min_length=1, max_length=128)
     robot_id: Optional[str] = Field(default=None, description="Defaults to a slug of custom_name")
-    robot_type: str = Field(default="differential_drive", max_length=64)
-    ros_domain_id: Optional[int] = Field(default=None, ge=0, le=232)
+    robot_type: Optional[str] = Field(default=None, max_length=64)
+
+    @field_validator("robot_id")
+    @classmethod
+    def _check_id(cls, value: Optional[str]) -> Optional[str]:
+        return validate_robot_id(value) if value else value
+
+
+class RobotCreateRequest(BaseModel):
+    """Add a robot by hand (no MAC registration): its id is its ROS namespace."""
+
+    robot_id: str
+    name: Optional[str] = Field(default=None, max_length=128)
+    robot_type: Optional[str] = Field(default=None, max_length=64)
+    connect: bool = True
+
+    _v = field_validator("robot_id")(validate_robot_id)
 
 
 class RobotRegisterRequest(MacAddressBody):
@@ -165,10 +170,5 @@ class RobotTypeOut(BaseModel):
     name: str
     description: str
     capabilities: List[str]
-
-
-class BridgeStatusOut(BaseModel):
-    robot_id: str
-    running: bool
-    restarts: int = 0
-    config_path: Optional[str] = None
+    extends: Optional[str] = None
+    topics: Dict[str, Dict[str, str]] = {}

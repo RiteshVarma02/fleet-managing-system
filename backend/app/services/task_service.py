@@ -22,7 +22,9 @@ from app.core.logging_config import get_logger
 from app.db.documents import TaskStatus
 from app.db.mongo import get_database
 from app.db.repositories import locations_repo, pending_requests_repo, robots_repo, tasks_repo
-from app.ros.capabilities.navigation import (
+from app.ros.capabilities.waypoint_nav import (
+    NAV_CANCELLED,
+    NAV_PAUSED,
     NAV_SUCCEEDED,
     TERMINAL_NAV_STATES,
 )
@@ -124,7 +126,10 @@ class TaskEngine:
             raise ConflictError(
                 f"Robot '{robot_id}' is already executing a task", code="robot_busy"
             )
-        robot_service.require_controller(robot_id, "navigation")
+        controller = robot_service.require_controller(robot_id, "waypoint_nav")
+        hold = _safety_hold(controller)
+        if hold:
+            raise ConflictError(f"Robot '{robot_id}' cannot move: {hold}", code="safety_hold")
         await self._resolve_legs(db, task)
 
         task = await tasks_repo.set_status(
@@ -157,18 +162,20 @@ class TaskEngine:
         robot_id = str(progress.get("robot_id") or "")
         if robot_id:
             with contextlib.suppress(Exception):
-                robot_service.require_controller(robot_id).cancel_nav_goal()
+                robot_service.require_controller(robot_id).abort_waypoint("Cancelled by operator")
         if task is not None:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
         await self._finish(db, task_id, robot_id, TaskStatus.cancelled, "Cancelled by operator")
 
-    async def pause_task(self, db, task_id: str) -> Dict[str, Any]:
-        """Stop the robot mid-leg (Nav2 action cancelled) but keep the task.
+    async def pause_task(
+        self, db, task_id: str, reason: str = "Paused by operator"
+    ) -> Dict[str, Any]:
+        """Halt the robot mid-leg (empty route = stop in place) but keep the task.
 
-        The engine re-issues the same goal on `resume_task`, so no mission
-        progress is lost — Nav2 has no native pause for NavigateToPose.
+        The engine re-sends the same waypoint on `resume_task`, so no mission
+        progress is lost.
         """
         if not self.is_running(task_id):
             raise ConflictError("Task is not running", code="task_not_running")
@@ -180,8 +187,8 @@ class TaskEngine:
         # Flag first: the poll loop must see paused before it can observe the
         # transient CANCELLED state that pausing produces.
         self._pause_flags[task_id] = True
-        controller = robot_service.require_controller(robot_id, "navigation")
-        ok, detail = controller.pause_nav_goal()
+        controller = robot_service.require_controller(robot_id, "waypoint_nav")
+        ok, detail = controller.pause_waypoint(reason)
         if not ok:
             self._pause_flags.pop(task_id, None)
             raise ValidationError(detail)
@@ -192,20 +199,29 @@ class TaskEngine:
         current = self._progress.get(task_id)
         if current is not None:
             current["status"] = TaskStatus.paused.value
-            current["message"] = "Paused by operator"
-        await tasks_repo.set_status(db, task_id, TaskStatus.paused, message="Paused by operator")
+            current["message"] = reason
+        await tasks_repo.set_status(db, task_id, TaskStatus.paused, message=reason)
         return dict(current or {})
 
     async def resume_task(self, db, task_id: str) -> Dict[str, Any]:
-        """Re-issue the interrupted goal and continue the remaining legs."""
+        """Operator presses Continue: re-send the interrupted leg and go on.
+
+        Refused while an E-stop is still active — after a physical E-stop the
+        robot only moves again once it is released AND an operator continues.
+        """
+        if self._pause_flags.get(task_id):
+            progress = self._progress.get(task_id) or {}
+            controller = robot_service.require_controller(
+                str(progress.get("robot_id") or ""), "waypoint_nav"
+            )
+            hold = _safety_hold(controller)
+            if hold:
+                raise ConflictError(f"Cannot continue: {hold}", code="safety_hold")
         was_paused = self._pause_flags.pop(task_id, False)
         if not was_paused:
             if self.is_running(task_id):
                 raise ConflictError("Task is not paused", code="task_not_paused")
             raise ConflictError("Task is not running", code="task_not_running")
-
-        progress = self._progress.get(task_id) or {}
-        robot_id = str(progress.get("robot_id") or "")
 
         await tasks_repo.set_status(db, task_id, TaskStatus.running, message="Resumed")
         current = self._progress.get(task_id)
@@ -255,10 +271,10 @@ class TaskEngine:
                     while leg_index < len(legs):
                         try:
                             await self._drive_to(db, task_id, robot_id, legs[leg_index])
-                        except _TaskPaused:
-                            # Robot is stopped (Nav2 goal cancelled). Block here
-                            # until resume/cancel; then retry the same leg.
-                            await self._wait_while_paused(db, task_id)
+                        except _TaskPaused as paused:
+                            # Robot is halted. Block here until resume/cancel;
+                            # then retry the same leg.
+                            await self._wait_while_paused(db, task_id, str(paused))
                             continue
                         leg_index += 1
                     await tasks_repo.increment_repeats(db, task_id)
@@ -284,13 +300,14 @@ class TaskEngine:
             with contextlib.suppress(Exception):
                 await self._finish(db, task_id, robot_id, status, message)
 
-    async def _wait_while_paused(self, db, task_id: str) -> None:
+    async def _wait_while_paused(self, db, task_id: str, reason: str = "") -> None:
         """Persist the paused state and block until `resume_task` fires."""
-        await tasks_repo.set_status(db, task_id, TaskStatus.paused, message="Paused by operator")
+        reason = reason or "Paused by operator"
+        await tasks_repo.set_status(db, task_id, TaskStatus.paused, message=reason)
         progress = self._progress.get(task_id)
         if progress is not None:
             progress["status"] = TaskStatus.paused.value
-            progress["message"] = "Paused by operator"
+            progress["message"] = reason
         event = self._resume_events.get(task_id)
         if event is not None:
             # Cancel during pause raises CancelledError here, which `_run`
@@ -298,58 +315,55 @@ class TaskEngine:
             await event.wait()
 
     async def _drive_to(self, db, task_id: str, robot_id: str, location: Dict[str, Any]) -> None:
-        controller = robot_service.require_controller(robot_id, "navigation")
-        # Entry check closes the between-legs race: without it a pause landing
-        # just after the previous leg returned would still let the next goal
-        # publish before the first poll tick noticed the flag.
+        """Drive one leg: publish the waypoint NAME, wait for a true arrival."""
+        controller = robot_service.require_controller(robot_id, "waypoint_nav")
+        waypoint = str(location.get("name") or "")
+        # Entry check closes the between-legs race: a pause (or an E-stop)
+        # landing just after the previous leg returned must stop the next goal.
         if self._pause_flags.get(task_id):
-            raise _TaskPaused()
-        ok, detail = controller.send_nav2_goal(
-            float(location.get("x", 0.0)),
-            float(location.get("y", 0.0)),
-            float(location.get("theta", 0.0)),
-        )
+            raise _TaskPaused("Paused by operator")
+        hold = _safety_hold(controller)
+        if hold:
+            self._pause_flags[task_id] = True
+            raise _TaskPaused(hold)
+
+        ok, detail = controller.send_waypoint(waypoint)
         if not ok:
             raise ValidationError(detail)
-        # Only terminal states stamped with THIS goal's epoch may end the wait;
-        # anything older is a delayed message from the previous leg.
-        # Read epoch from controller's internal state after goal is sent.
-        nav_status = controller.get_nav_status()
-        epoch = int(nav_status.get("epoch") or 0)
-        # Defensive: if epoch is 0 (not set yet), wait one poll cycle for it to be set
-        poll = max(0.2, settings.nav_poll_interval_seconds)
-        if epoch == 0:
-            await asyncio.sleep(poll)
-            nav_status = controller.get_nav_status()
-            epoch = int(nav_status.get("epoch") or 0)
+        # Only terminal states stamped with THIS goal's epoch may end the wait.
+        epoch = int(controller.get_nav_status().get("epoch") or 0)
 
-        self._progress.setdefault(task_id, {})["leg"] = location.get("name")
-        self._progress.setdefault(task_id, {})["status"] = TaskStatus.running.value
-        self._progress.setdefault(task_id, {})["message"] = (
-            f"Navigating to {location.get('name')}"
-        )
-        await tasks_repo.append_history(
-            db, task_id, TaskStatus.running, f"Navigating to {location.get('name')}"
-        )
+        progress = self._progress.setdefault(task_id, {})
+        progress.update(leg=waypoint, status=TaskStatus.running.value, message=f"Going to {waypoint}")
+        await tasks_repo.append_history(db, task_id, TaskStatus.running, f"Going to {waypoint}")
 
+        poll = max(0.1, settings.nav_poll_interval_seconds)
         waited = 0.0
         while waited < settings.nav_goal_timeout_seconds:
             await asyncio.sleep(poll)
             waited += poll
             if self._pause_flags.get(task_id):
-                raise _TaskPaused()
+                raise _TaskPaused("Paused by operator")
+            hold = _safety_hold(controller)
             nav = controller.get_nav_status()
+            if hold or (nav.get("epoch") == epoch and nav.get("status") == NAV_PAUSED):
+                # E-stop halted the robot: pause the mission, never fail it.
+                self._pause_flags[task_id] = True
+                raise _TaskPaused(hold or nav.get("message") or "Paused")
             if nav.get("epoch") != epoch:
                 continue  # stale update from a previous leg — ignore
-            if ros_state := nav.get("status"):
-                if ros_state in TERMINAL_NAV_STATES:
-                    if ros_state == NAV_SUCCEEDED:
-                        return
-                    if ros_state == "cancelled":
-                        raise _CancelledByOperator()
-                    raise ValidationError(f"Navigation to {location.get('name')} {ros_state}")
-        controller.cancel_nav_goal()
-        raise ValidationError(f"Navigation to {location.get('name')} timed out")
+            state = nav.get("status")
+            if state in TERMINAL_NAV_STATES:
+                if state == NAV_SUCCEEDED:
+                    return
+                if state == NAV_CANCELLED:
+                    raise _CancelledByOperator()
+                raise ValidationError(f"Leg to {waypoint} {state}: {nav.get('message')}")
+        controller.abort_waypoint(f"No arrival at {waypoint} within timeout")
+        raise ValidationError(
+            f"No arrival at {waypoint} after {int(settings.nav_goal_timeout_seconds)}s "
+            "(is traffic_manager_node running on the fleet PC?)"
+        )
 
     async def _finish(
         self, db, task_id: str, robot_id: str, status: TaskStatus, message: str
@@ -408,6 +422,12 @@ class TaskEngine:
         except Exception as exc:
             logger.warning("Auto-start of task %s failed: %s", task_id, exc)
             await tasks_repo.set_status(db, task_id, TaskStatus.pending, message=str(exc))
+
+
+def _safety_hold(controller: Any) -> Optional[str]:
+    """E-stop reason for a controller, or None (robots without the capability)."""
+    hold = getattr(controller, "safety_hold", None)
+    return hold() if callable(hold) else None
 
 
 task_engine = TaskEngine()

@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from app.api.deps import Principal, get_current_user
+from app.api.deps import Principal, get_current_user, require_admin
 from app.core.config import settings
+from app.core.exceptions import ValidationError
 from app.db.mongo import connect_and_verify
 from app.ros.manager import ros_manager
 from app.ros.runtime import ros_error
-from app.ros.topics_registry import robot_types
+from app.ros.topics_registry import TopicConfigError, robot_types, topic_registry
 from app.schemas.common import DataResponse
-from app.services.map_service import map_service
 
 router = APIRouter(tags=["system"])
 
@@ -44,9 +44,24 @@ def system_info(_: Principal = Depends(get_current_user)):
             "ros_domain_id": settings.ros_domain_id,
             "connected_robots": ros_manager.connected_robot_ids(),
             "robot_types": robot_types(),
-            "slam_running": map_service.slam_running(),
-            "domain_bridge_enabled": settings.domain_bridge_enabled,
-            "bridges": ros_manager.bridge_status(),
+            "topics_file": str(topic_registry.path),
             "telemetry_ws_interval_seconds": settings.telemetry_ws_interval_seconds,
+            "telemetry_stale_after_seconds": settings.telemetry_stale_after_seconds,
         }
     )
+
+
+@router.get("/system/topics", response_model=DataResponse[dict])
+def topics(_: Principal = Depends(get_current_user)):
+    """The parsed fleet_topics.yaml: every topic name and type, per robot type."""
+    return DataResponse(data=topic_registry.describe())
+
+
+@router.post("/system/topics/reload", response_model=DataResponse[dict])
+def reload_topics(_: Principal = Depends(require_admin)):
+    """Re-read fleet_topics.yaml. Robots listed in `reconnect_required` keep
+    their old topics until they are disconnected and connected again."""
+    try:
+        return DataResponse(data=ros_manager.reload_topics())
+    except TopicConfigError as exc:
+        raise ValidationError(f"fleet_topics.yaml not applied: {exc}") from exc

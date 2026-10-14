@@ -20,7 +20,7 @@ import contextlib
 import json
 import threading
 import time
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from app.core.config import settings
 from app.core.logging_config import get_logger
@@ -39,6 +39,21 @@ class TelemetryBus:
         self._subscribers: Set[asyncio.Queue] = set()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._tasks: List[asyncio.Task] = []
+        # Injected at startup (robot_service.status_of) so the bus stays free
+        # of service imports; every frame / flush carries the derived status.
+        self._status_provider: Optional[Callable[[str], Any]] = None
+
+    def set_status_provider(self, provider: Callable[[str], Any]) -> None:
+        self._status_provider = provider
+
+    def _status(self, robot_id: str) -> Optional[str]:
+        if self._status_provider is None:
+            return None
+        try:
+            value = self._status_provider(robot_id)
+        except Exception:  # pragma: no cover - defensive
+            return None
+        return getattr(value, "value", value)
 
     # ------------------------------------------------------------------
     # producer side (ROS threads)
@@ -79,7 +94,9 @@ class TelemetryBus:
                 return []
             batch = [dict(self._latest[rid]) for rid in self._dirty if rid in self._latest]
             self._dirty.clear()
-            return batch
+        for snap in batch:
+            snap["status"] = self._status(str(snap.get("robot_id"))) or snap.get("status")
+        return batch
 
     # ------------------------------------------------------------------
     # consumer side (event loop)
@@ -137,8 +154,11 @@ class TelemetryBus:
                             "robot_id": snap.get("robot_id"),
                             "position": snap.get("position"),
                             "battery": snap.get("battery"),
-                            "status": snap.get("status"),
+                            "status": self._status(str(snap.get("robot_id")))
+                            or snap.get("status"),
                             "nav": snap.get("nav"),
+                            "stop_active": bool(snap.get("stop_active")),
+                            "emergency_active": bool(snap.get("emergency_active")),
                             "at": snap.get("at"),
                         }
                         for snap in self.fleet_snapshot()

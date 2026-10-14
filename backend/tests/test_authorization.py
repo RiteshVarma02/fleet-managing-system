@@ -38,20 +38,14 @@ def _routes(router):
 
 
 MAP_WRITE_PATHS = {
-    ("POST", "/maps/from-robot"),
     ("POST", "/maps/load"),
     ("POST", "/maps/activate"),
     ("DELETE", "/maps/{name}"),
-    ("POST", "/maps/slam/start"),
-    ("POST", "/maps/slam/stop"),
-    ("POST", "/maps/save-from-robot"),
-    ("POST", "/maps/save"),
 }
 
 MAP_READ_PATHS = {
     ("GET", "/maps/current"),
     ("GET", "/maps"),
-    ("GET", "/maps/slam/status"),
 }
 
 

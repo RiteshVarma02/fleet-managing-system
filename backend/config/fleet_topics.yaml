@@ -1,0 +1,118 @@
+# =============================================================================
+#  FLEET TOPICS: the ONE place every ROS topic name and type is defined.
+# =============================================================================
+#
+#  Edit this file to rename a topic, change a message type or add a robot
+#  type. Nothing in the Python code hard-codes a topic name. Restart the
+#  backend (or call POST /api/v1/system/topics/reload as a developer) to apply.
+#
+#  Placeholders:
+#    {robot}   the robot's id, which is also its ROS namespace (e.g. "robot1")
+#
+#  Every topic entry:
+#    name:  full topic name (use {robot} for per-robot topics)
+#    type:  ROS message type, "pkg/msg/Name"
+#    qos:   default | sensor | latched           (optional, default: default)
+#             default -> reliable, keep last 10
+#             sensor  -> best effort, keep last 1   (high-rate data)
+#             latched -> reliable + transient local (e.g. amcl_pose)
+#
+#  Robot types:
+#    extends:       inherit every topic + capability of another type
+#    capabilities:  behaviour modules (backend/app/ros/capabilities/*.py)
+#    topics:        logical name -> topic entry. Capabilities look topics up by
+#                   their LOGICAL name (left side), never by the ROS name.
+#                   Set a topic to null in a child type to remove it.
+# =============================================================================
+
+version: 1
+
+# Topics that are not tied to one robot.
+fleet:
+  registration:
+    name: /robot/register
+    type: std_msgs/msg/String
+  registration_response:
+    name: /robot/register/response
+    type: std_msgs/msg/String
+
+default_robot_type: waypoint_amr
+
+robot_types:
+
+  # ---------------------------------------------------------------------------
+  # Standard AMR driven by the waypoint route_manager (no Nav2).
+  # Same interface mission_commander.py uses.
+  # ---------------------------------------------------------------------------
+  waypoint_amr:
+    description: Waypoint-graph AMR (route_manager + traffic manager, no Nav2)
+    capabilities: [waypoint_nav, telemetry, emergency, movement]
+    topics:
+      # --- waypoint navigation ---------------------------------------------
+      goal:                                     # server -> robot: waypoint NAME
+        name: /{robot}/amr/goal
+        type: std_msgs/msg/String
+      goal_reached:                             # robot -> server: TRUE arrival
+        name: /{robot}/amr/final_goal_reached   # filtered by route_manager; do
+        type: std_msgs/msg/Bool                 # not use raw amr/goal_reached
+      route_abort:                              # server -> robot: empty Path = halt
+        name: /{robot}/amr/route
+        type: nav_msgs/msg/Path
+
+      # --- state -----------------------------------------------------------
+      pose:
+        name: /{robot}/amcl_pose
+        type: geometry_msgs/msg/PoseWithCovarianceStamped
+        qos: latched
+      battery:
+        name: /{robot}/battery_state
+        type: sensor_msgs/msg/BatteryState
+
+      # --- safety ----------------------------------------------------------
+      stop_active:                              # robot -> server: physical E-stop
+        name: /{robot}/stop_active              # button pressed (true) / released
+        type: std_msgs/msg/Bool
+      emergency_stop:                           # server -> robot: software E-stop
+        name: /{robot}/emergency_stop
+        type: std_msgs/msg/Bool
+
+      # --- teleop ----------------------------------------------------------
+      cmd_vel:
+        name: /{robot}/cmd_vel
+        type: geometry_msgs/msg/Twist
+
+      # --- fleet file sync (graph JSON + map), see tools/fleet_files --------
+      file_update:                              # server -> robot
+        name: /{robot}/fleet/file_update
+        type: std_msgs/msg/String
+        qos: latched
+      file_ack:                                 # robot -> server
+        name: /{robot}/fleet/file_ack
+        type: std_msgs/msg/String
+
+  # ---------------------------------------------------------------------------
+  # Examples for future robot kinds. Uncomment / adapt when they join the fleet.
+  # ---------------------------------------------------------------------------
+  # forklift_amr:
+  #   extends: waypoint_amr
+  #   description: Waypoint AMR with a fork-lift mast
+  #   capabilities: [fork_control]          # added to the inherited ones
+  #   topics:
+  #     fork_command:
+  #       name: /{robot}/fork_lift_cmd
+  #       type: std_msgs/msg/Float32
+  #     fork_height:
+  #       name: /{robot}/fork_height
+  #       type: std_msgs/msg/Float32
+  #
+  # arm_amr:
+  #   extends: waypoint_amr
+  #   description: Waypoint AMR with a manipulator arm
+  #   capabilities: [arm_control]
+  #   topics:
+  #     gripper_command:
+  #       name: /{robot}/gripper_cmd
+  #       type: std_msgs/msg/String
+  #     arm_state:
+  #       name: /{robot}/arm_state
+  #       type: std_msgs/msg/String

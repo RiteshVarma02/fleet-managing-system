@@ -4,13 +4,19 @@ The API must still boot (and its non-ROS endpoints must still work) on a host
 without a ROS 2 installation — CI, containers, developer laptops. Every ROS
 import goes through this module so a missing installation is a clean 503
 instead of an ImportError at startup.
+
+Message classes are NOT imported by name here: they are resolved from the
+type strings in `config/fleet_topics.yaml` via `message_class()`, so changing
+a topic's type is a config edit, not a code edit.
 """
 
 from __future__ import annotations
 
+import importlib
 import math
+import threading
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from app.core.logging_config import get_logger
 
@@ -26,24 +32,17 @@ class RosModules:
     QoSProfile: Any
     ReliabilityPolicy: Any
     HistoryPolicy: Any
-    Twist: Any
-    PoseStamped: Any
-    PoseWithCovarianceStamped: Any
-    OccupancyGrid: Any
-    Odometry: Any
-    LaserScan: Any
-    BatteryState: Any
-    Bool: Any
-    String: Any
-    Float32: Any
+    DurabilityPolicy: Any
 
 
 _modules: Optional[RosModules] = None
 _import_error: Optional[str] = None
+_msg_cache: Dict[str, Any] = {}
+_msg_lock = threading.Lock()
 
 
 def load_ros() -> Optional[RosModules]:
-    """Import rclpy + message types once. Returns None when unavailable."""
+    """Import rclpy once. Returns None when unavailable."""
     global _modules, _import_error
     if _modules is not None or _import_error is not None:
         return _modules
@@ -53,11 +52,7 @@ def load_ros() -> Optional[RosModules]:
         from rclpy.callback_groups import ReentrantCallbackGroup
         from rclpy.executors import MultiThreadedExecutor
         from rclpy.node import Node
-        from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
-        from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
-        from nav_msgs.msg import OccupancyGrid, Odometry
-        from sensor_msgs.msg import BatteryState, LaserScan
-        from std_msgs.msg import Bool, Float32, String
+        from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
     except Exception as exc:  # pragma: no cover - depends on host
         _import_error = str(exc)
         logger.warning("ROS 2 runtime unavailable: %s", exc)
@@ -71,16 +66,7 @@ def load_ros() -> Optional[RosModules]:
         QoSProfile=QoSProfile,
         ReliabilityPolicy=ReliabilityPolicy,
         HistoryPolicy=HistoryPolicy,
-        Twist=Twist,
-        PoseStamped=PoseStamped,
-        PoseWithCovarianceStamped=PoseWithCovarianceStamped,
-        OccupancyGrid=OccupancyGrid,
-        Odometry=Odometry,
-        LaserScan=LaserScan,
-        BatteryState=BatteryState,
-        Bool=Bool,
-        String=String,
-        Float32=Float32,
+        DurabilityPolicy=DurabilityPolicy,
     )
     return _modules
 
@@ -94,11 +80,39 @@ def ros_error() -> Optional[str]:
     return _import_error
 
 
-def sensor_qos(ros: RosModules, depth: int = 1) -> Any:
-    """Best-effort, keep-last QoS for high-rate sensor topics."""
+def message_class(type_name: str) -> Any:
+    """`"std_msgs/msg/String"` -> `std_msgs.msg.String` (cached)."""
+    with _msg_lock:
+        cls = _msg_cache.get(type_name)
+        if cls is not None:
+            return cls
+        try:
+            package, kind, name = type_name.split("/")
+            cls = getattr(importlib.import_module(f"{package}.{kind}"), name)
+        except (ValueError, ImportError, AttributeError) as exc:
+            raise ImportError(f"Cannot import ROS message type '{type_name}': {exc}") from exc
+        _msg_cache[type_name] = cls
+        return cls
+
+
+def qos_profile(ros: RosModules, profile: str = "default") -> Any:
+    """Map the profile names used in fleet_topics.yaml to rclpy QoS objects."""
+    if profile == "sensor":
+        return ros.QoSProfile(
+            depth=1,
+            reliability=ros.ReliabilityPolicy.BEST_EFFORT,
+            history=ros.HistoryPolicy.KEEP_LAST,
+        )
+    if profile == "latched":
+        return ros.QoSProfile(
+            depth=10,
+            reliability=ros.ReliabilityPolicy.RELIABLE,
+            durability=ros.DurabilityPolicy.TRANSIENT_LOCAL,
+            history=ros.HistoryPolicy.KEEP_LAST,
+        )
     return ros.QoSProfile(
-        depth=depth,
-        reliability=ros.ReliabilityPolicy.BEST_EFFORT,
+        depth=10,
+        reliability=ros.ReliabilityPolicy.RELIABLE,
         history=ros.HistoryPolicy.KEEP_LAST,
     )
 

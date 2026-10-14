@@ -9,8 +9,8 @@ class DockingCapability:
     name = "docking"
 
     def setup_docking(self) -> None:
-        self._dock_pub = self.publisher("dock_command", self._ros.String)
-        self.subscribe("dock_state", self._ros.String, self._on_dock_state, qos=10)
+        self._dock_pub = self.publisher("dock_command")
+        self.subscribe("dock_state", self._on_dock_state)
         self.dock_state: Optional[str] = None
 
     def _on_dock_state(self, msg: Any) -> None:
@@ -19,7 +19,7 @@ class DockingCapability:
     def _send_dock_command(self, command: str) -> bool:
         if self._dock_pub is None:
             return False
-        msg = self._ros.String()
+        msg = self.msg("dock_command")
         msg.data = command
         self._dock_pub.publish(msg)
         return True
@@ -29,3 +29,6 @@ class DockingCapability:
 
     def undock(self) -> bool:
         return self._send_dock_command("undock")
+
+    def docking_snapshot(self):
+        return {"dock_state": self.dock_state}

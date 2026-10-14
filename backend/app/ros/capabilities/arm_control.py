@@ -13,8 +13,8 @@ class ArmControlCapability:
     name = "arm_control"
 
     def setup_arm_control(self) -> None:
-        self._gripper_pub = self.publisher("gripper_command", self._ros.String)
-        self.subscribe("arm_state", self._ros.String, self._on_arm_state, qos=10)
+        self._gripper_pub = self.publisher("gripper_command")
+        self.subscribe("arm_state", self._on_arm_state)
         self.arm_state: Optional[str] = None
 
     def _on_arm_state(self, msg: Any) -> None:
@@ -26,7 +26,10 @@ class ArmControlCapability:
             raise ValidationError(f"command must be one of {sorted(GRIPPER_COMMANDS)}")
         if self._gripper_pub is None:
             return False
-        msg = self._ros.String()
+        msg = self.msg("gripper_command")
         msg.data = normalized
         self._gripper_pub.publish(msg)
         return True
+
+    def arm_control_snapshot(self):
+        return {"arm_state": self.arm_state}

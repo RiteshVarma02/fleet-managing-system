@@ -32,7 +32,7 @@ services:
       ROS_DOMAIN_ID: "0"
       DOMAIN_BRIDGE_ENABLED: "true"
       AUTOSTART_ROBOT_CONTROLLERS: "true"
-    # ROS 2 DDS discovery and domain_bridge both need the host network.
+    # ROS 2 DDS discovery needs the host network.
     network_mode: host
     volumes:
       - ./maps:/srv/app/maps
