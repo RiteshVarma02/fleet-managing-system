@@ -1,12 +1,13 @@
-"""Task, pick-drop and pending-request endpoints.
+"""Mission (task) and pending-request endpoints.
 
 Execution is owned by `task_service.task_engine`: these routes only validate
 input, persist intent and hand off. Progress reads come from the engine's
 in-memory state, so polling a running task costs no database round trip.
 
-Route ordering matters: all static paths (`/pickdrop/*`, `/requests/*`) are
-declared before the `/{task_id}` dynamic routes so they are never swallowed by
-the parameterised patterns (Starlette resolves routes in declaration order).
+Route ordering matters: all static paths (`/missions`, `/waypoint`, `/robot/*`,
+`/requests/*`) are declared before the `/{task_id}` dynamic routes so they are
+never swallowed by the parameterised patterns (Starlette resolves routes in
+declaration order).
 """
 
 from __future__ import annotations
@@ -17,21 +18,26 @@ from fastapi import APIRouter, Depends, Query
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.api.deps import Principal, get_current_user, get_db, require_operator
-from app.core.exceptions import ConflictError, NotFoundError
+from app.core.exceptions import NotFoundError
 from app.db.documents import TaskStatus
 from app.db.repositories import pending_requests_repo, tasks_repo
 from app.schemas.common import DataResponse, StatusResponse
-from app.schemas.robot import RobotIdBody
 from app.schemas.task import (
-    PickDropStart,
+    MissionStart,
     TaskCreate,
     TaskHistoryOut,
     TaskOut,
     TaskRequestCreate,
     TaskRequestOut,
     TaskUpdate,
+    WaypointSend,
 )
-from app.services.task_service import start_pick_drop, task_engine
+from app.services.task_service import (
+    send_waypoint,
+    start_mission,
+    task_engine,
+    validate_stops,
+)
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -64,13 +70,15 @@ async def create_task(
     db: AsyncIOMotorDatabase = Depends(get_db),
     user: Principal = Depends(require_operator),
 ):
+    """Create a mission without starting it."""
+    await validate_stops(db, body.stops)
     task = await tasks_repo.create(
         db,
         task_type=body.type,
         robot_id=body.robot_id,
-        from_location_id=body.from_location_id,
-        to_location_id=body.to_location_id,
+        stops=body.stops,
         repeats=body.repeats,
+        mode=body.mode,
         created_by=user.username,
         payload=body.payload,
     )
@@ -78,69 +86,41 @@ async def create_task(
 
 
 # --------------------------------------------------------------------------
-# Pick & drop — static paths MUST come before the /{task_id} dynamic routes.
+# Static paths MUST come before the /{task_id} dynamic routes.
 # --------------------------------------------------------------------------
-@router.post("/pickdrop/start", response_model=DataResponse[dict], status_code=201)
-async def start_pickdrop(
-    body: PickDropStart,
+@router.post("/missions", response_model=DataResponse[dict], status_code=201)
+async def start_mission_endpoint(
+    body: MissionStart,
     db: AsyncIOMotorDatabase = Depends(get_db),
     user: Principal = Depends(require_operator),
 ):
-    task, progress = await start_pick_drop(
-        db,
-        robot_id=body.robot_id,
-        pickup_location_id=body.pickup_location_id,
-        drop_location_id=body.drop_location_id,
-        repeats=body.repeats,
-        created_by=user.username,
+    """Plus-button mission: ordered stops x repeats, continuous or move-on-click."""
+    result = await start_mission(
+        db, body.robot_id, body.stops, body.repeats, body.mode, user.username
     )
-    return DataResponse(data={"task": TaskOut.from_document(task), "progress": progress})
+    return DataResponse(
+        data={"task": TaskOut.from_document(result["task"]), "progress": result["progress"]}
+    )
 
 
-@router.post("/pickdrop/stop", response_model=StatusResponse)
-async def stop_pickdrop(
-    body: RobotIdBody,
+@router.post("/waypoint", response_model=DataResponse[dict], status_code=201)
+async def send_waypoint_endpoint(
+    body: WaypointSend,
     db: AsyncIOMotorDatabase = Depends(get_db),
-    _: Principal = Depends(require_operator),
+    user: Principal = Depends(require_operator),
 ):
-    task_id = task_engine.running_task_id(body.robot_id)
-    if task_id is None:
-        return StatusResponse(message=f"No task running for {body.robot_id}")
-    await task_engine.cancel_task(db, task_id)
-    return StatusResponse(message=f"Task {task_id} cancelled")
+    """Text box: send one robot to one waypoint by name."""
+    result = await send_waypoint(db, body.robot_id, body.waypoint, user.username)
+    return DataResponse(
+        data={"task": TaskOut.from_document(result["task"]), "progress": result["progress"]}
+    )
 
 
-@router.post("/pickdrop/pause", response_model=StatusResponse)
-async def pause_pickdrop(
-    body: RobotIdBody,
-    db: AsyncIOMotorDatabase = Depends(get_db),
-    _: Principal = Depends(require_operator),
-):
-    """Stop the robot mid-mission; the task stays alive and can be resumed."""
-    task_id = task_engine.running_task_id(body.robot_id)
-    if task_id is None:
-        raise ConflictError(f"No running task for {body.robot_id}", code="task_not_running")
-    await task_engine.pause_task(db, task_id)
-    return StatusResponse(message=f"Task {task_id} paused")
-
-
-@router.post("/pickdrop/resume", response_model=StatusResponse)
-async def resume_pickdrop(
-    body: RobotIdBody,
-    db: AsyncIOMotorDatabase = Depends(get_db),
-    _: Principal = Depends(require_operator),
-):
-    """Re-issue the interrupted goal and continue the mission."""
-    task_id = task_engine.paused_task_id(body.robot_id)
-    if task_id is None:
-        raise ConflictError(f"No paused task for {body.robot_id}", code="task_not_paused")
-    await task_engine.resume_task(db, task_id)
-    return StatusResponse(message=f"Task {task_id} resumed")
-
-
-@router.get("/pickdrop/{robot_id}/status", response_model=DataResponse[Optional[dict]])
-def pickdrop_status(robot_id: str, _: Principal = Depends(get_current_user)):
-    return DataResponse(data=task_engine.robot_progress(robot_id))
+@router.get("/robot/{robot_id}/progress", response_model=DataResponse[Optional[dict]])
+def robot_progress(robot_id: str, _: Principal = Depends(get_current_user)):
+    """Live progress of whatever the robot is doing (None when idle)."""
+    task_id = task_engine.running_task_id(robot_id)
+    return DataResponse(data=task_engine.progress(task_id) if task_id else None)
 
 
 # --------------------------------------------------------------------------
@@ -153,17 +133,18 @@ async def create_request(
     user: Principal = Depends(require_operator),
 ):
     """Queue unassigned work; `scheduled_at` defers it until that instant."""
+    await validate_stops(db, body.stops)
     request = await pending_requests_repo.create(
         db,
         task_type=body.type,
-        from_location_id=body.from_location_id,
-        to_location_id=body.to_location_id,
+        stops=body.stops,
         robot_type=body.robot_type,
         repeats=body.repeats,
+        mode=body.mode,
         created_by=user.username,
         scheduled_at=body.scheduled_at,
     )
-    return DataResponse(data=TaskRequestOut.model_validate(request))
+    return DataResponse(data=TaskRequestOut.from_document(request))
 
 
 @router.get("/requests/unassigned", response_model=DataResponse[List[TaskRequestOut]])
@@ -267,6 +248,17 @@ async def resume_task(
 ):
     """Re-issue the paused goal and continue the remaining legs."""
     progress = await task_engine.resume_task(db, task_id)
+    return DataResponse(data=progress)
+
+
+@router.post("/{task_id}/approve", response_model=DataResponse[Optional[dict]])
+async def approve_task(
+    task_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    _: Principal = Depends(require_operator),
+):
+    """Move on click: let a waiting mission go to its next stop."""
+    progress = await task_engine.approve_task(db, task_id)
     return DataResponse(data=progress)
 
 

@@ -56,3 +56,21 @@ The old `/maps` module (separate map uploads, SLAM, activate) is deleted. `GET /
 
 ## D17. Waypoint coordinates are read tolerantly from the graph
 Only `id` and `name` are guaranteed by route_manager's graph, so `x`/`y` (also `pose.x`, `position.x`) are optional. Waypoints without coordinates still work for sending; they just cannot be drawn on the map.
+
+## D18. One mission model for everything: `stops[]` x `repeats` x `mode`
+The text box is just a one-stop mission (`task_type: waypoint`). Pause, resume, cancel, E-stop handling, history and progress therefore work identically for a single waypoint and for 1->2->5->7->8 x 50. No second code path to keep safe.
+
+## D19. "Move on click" = approval after every arrival except the final one
+Starting the mission is the approval for the first leg. After each arrival the task enters `awaiting_approval` (robot stands still) until `POST /tasks/{id}/approve`; this includes the hop from the last stop of a cycle back to the first of the next. The final stop of the final cycle finishes without waiting. Approve is refused during an E-stop; pause is refused while waiting (nothing is moving).
+
+## D20. Waypoint names are validated against the active graph, only when one exists
+A typo would otherwise ride a robot into a 5-minute goal timeout. With no graph uploaded yet (first bring-up) names are accepted as typed so the system is usable before the first upload. Names are re-validated at start because the graph may have changed since the mission was created.
+
+## D21. A restart never moves a robot by itself
+Running/paused/awaiting missions found at startup are reset to `pending`. The last reached stop is stored (`cursor`) for audit/UI but is not used to resume automatically: the robot may have been moved by hand while the server was down.
+
+## D22. Mission endpoints live under `/tasks`, not `/robots/{id}`
+`POST /tasks/waypoint` and `POST /tasks/missions` take `robot_id` in the body. One router owns every mission rule (validation, busy check, safety hold), and static paths are declared before `/{task_id}` routes. This deviates from the plan's `/robots/{id}/waypoint` wording on purpose.
+
+## D23. `locations` collection and pick/drop are deleted
+Waypoints now come from the graph JSON (single source of truth shared with route_manager). Keeping a second, hand-edited location list would drift from the real graph.

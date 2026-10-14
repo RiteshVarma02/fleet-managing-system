@@ -2,8 +2,8 @@
 
 Starlette resolves routes in declaration order, so static paths declared after
 a matching `/{param}` pattern are silently shadowed and their handlers never
-run. The tasks router must declare all static paths (`/pickdrop/*`,
-`/requests/*`) before the `/{task_id}` dynamic routes. These tests pin the
+run. The tasks router must declare all static paths (`/missions`,
+`/waypoint`, `/robot/*`, `/requests/*`) before the `/{task_id}` dynamic routes. These tests pin the
 declared order by resolving request paths against the router's compiled
 patterns and asserting the handler that wins.
 """
@@ -31,9 +31,9 @@ def _resolve(router, method: str, path: str):
 @pytest.mark.parametrize(
     "method,path,expected",
     [
-        ("POST", "/tasks/pickdrop/start", "start_pickdrop"),
-        ("POST", "/tasks/pickdrop/stop", "stop_pickdrop"),
-        ("GET", "/tasks/pickdrop/robot_1/status", "pickdrop_status"),
+        ("POST", "/tasks/missions", "start_mission_endpoint"),
+        ("POST", "/tasks/waypoint", "send_waypoint_endpoint"),
+        ("GET", "/tasks/robot/robot_1/progress", "robot_progress"),
         ("POST", "/tasks/requests", "create_request"),
         ("GET", "/tasks/requests/unassigned", "unassigned_requests"),
     ],
@@ -47,6 +47,7 @@ def test_static_task_routes_are_not_shadowed_by_dynamic(method, path, expected):
     [
         ("POST", "/tasks/abc123/start", "start_task"),
         ("POST", "/tasks/abc123/cancel", "cancel_task"),
+        ("POST", "/tasks/abc123/approve", "approve_task"),
         ("GET", "/tasks/abc123/progress", "task_progress"),
         ("GET", "/tasks/abc123/history", "task_history"),
         ("GET", "/tasks/abc123", "get_task"),

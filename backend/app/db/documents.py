@@ -39,6 +39,7 @@ class TaskStatus(str, Enum):
     pending = "pending"
     running = "running"
     paused = "paused"
+    awaiting_approval = "awaiting_approval"
     completed = "completed"
     failed = "failed"
     cancelled = "cancelled"

@@ -92,6 +92,7 @@ class Settings(BaseSettings):
     waypoint_arrival_debounce_seconds: float = 1.5
     fleet_files_ack_timeout_seconds: float = 8.0
     max_task_repeats: int = 1000
+    max_task_stops: int = 50
     task_max_concurrent: int = 32
 
     @field_validator(

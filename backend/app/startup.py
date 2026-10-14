@@ -1,4 +1,4 @@
-"""Idempotent bootstrap data (admin user, demo locations)."""
+"""Idempotent bootstrap data (admin user)."""
 
 from __future__ import annotations
 

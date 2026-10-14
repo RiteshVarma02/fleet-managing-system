@@ -25,7 +25,6 @@ class Collections:
     robot_registrations = "pending_robot_registrations"
     tasks = "tasks"
     task_history = "task_history"
-    locations = "locations"
     pending_requests = "pending_requests"
     fleet_files = "fleet_files"
     robot_file_state = "robot_file_state"
@@ -80,7 +79,6 @@ async def ensure_indexes() -> None:
     await db[Collections.tasks].create_index([("robot_id", ASCENDING), ("status", ASCENDING)])
     await db[Collections.tasks].create_index([("created_at", DESCENDING)])
     await db[Collections.task_history].create_index([("task_id", ASCENDING), ("at", ASCENDING)])
-    await db[Collections.locations].create_index([("name", ASCENDING)], unique=True)
     await db[Collections.fleet_files].create_index(
         [("kind", ASCENDING), ("version", DESCENDING)], unique=True
     )

@@ -1,6 +1,6 @@
 """Endpoint authorization tests (M1/M2).
 
-Fleet-file (admin) and location *write* endpoints must require operator privileges; read
+Fleet-file writes need admin, mission commands need operator; read
 endpoints may stay open to any authenticated user. `require_operator` is
 asserted to be in each write route's dependency chain and to actually reject
 the read-only `viewer` role.
@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from app.api.deps import Principal, get_current_user, require_admin, require_operator
-from app.api.v1.endpoints import fleet_files, locations
+from app.api.v1.endpoints import fleet_files, tasks
 from app.core.exceptions import ForbiddenError
 
 VIEWER = Principal(username="viewer", role="viewer")
@@ -74,24 +74,24 @@ def test_waypoints_readable_by_any_authenticated_user():
 @pytest.mark.parametrize(
     "method,path",
     [
-        ("POST", "/locations"),
-        ("DELETE", "/locations/{location_id}"),
+        ("POST", "/tasks"),
+        ("POST", "/tasks/missions"),
+        ("POST", "/tasks/waypoint"),
+        ("POST", "/tasks/{task_id}/approve"),
+        ("POST", "/tasks/{task_id}/pause"),
+        ("POST", "/tasks/{task_id}/resume"),
+        ("POST", "/tasks/{task_id}/cancel"),
     ],
 )
-def test_location_write_endpoints_require_operator(method, path):
-    route = next(
-        r for r in _routes(locations.router) if path == r.path and method in (r.methods or [])
-    )
+def test_mission_commands_require_operator(method, path):
+    route = next(r for r in _routes(tasks.router) if path == r.path and method in (r.methods or []))
     assert require_operator in _dependency_callables(route)
 
 
-def test_location_read_endpoint_allows_any_authenticated_user():
-    route = next(
-        r for r in _routes(locations.router) if r.path == "/locations" and "GET" in r.methods
-    )
+def test_mission_progress_readable_by_any_authenticated_user():
+    route = next(r for r in _routes(tasks.router) if r.path == "/tasks/robot/{robot_id}/progress")
     deps = _dependency_callables(route)
-    assert get_current_user in deps
-    assert require_operator not in deps
+    assert get_current_user in deps and require_operator not in deps
 
 
 def test_require_operator_rejects_viewer():

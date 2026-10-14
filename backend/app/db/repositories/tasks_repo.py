@@ -28,19 +28,20 @@ async def create(
     *,
     task_type: str,
     robot_id: Optional[str],
-    from_location_id: Optional[str],
-    to_location_id: Optional[str],
+    stops: List[str],
     repeats: int,
+    mode: str,
     created_by: Optional[str],
     payload: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     document = {
         "task_type": task_type,
         "robot_id": robot_id,
-        "from_location_id": from_location_id,
-        "to_location_id": to_location_id,
+        "stops": list(stops),
+        "mode": mode,
         "repeats": int(repeats),
         "completed_repeats": 0,
+        "cursor": {"cycle": 0, "stop_index": -1},  # last reached stop (audit/UI)
         "status": TaskStatus.pending.value,
         "message": None,
         "payload": payload or {},
@@ -80,7 +81,10 @@ async def list_tasks(
 
 
 async def list_active(db) -> List[Dict[str, Any]]:
-    cursor = _col(db).find({"status": {"$in": [TaskStatus.running.value, TaskStatus.paused.value]}})
+    cursor = _col(db).find(
+        {"status": {"$in": [TaskStatus.running.value, TaskStatus.paused.value,
+                            TaskStatus.awaiting_approval.value]}}
+    )
     return [serialize(doc) for doc in await cursor.to_list(length=500)]  # type: ignore[misc]
 
 
@@ -126,6 +130,16 @@ async def increment_repeats(db, task_id: str) -> None:
     oid = to_object_id(task_id)
     if oid is not None:
         await _col(db).update_one({"_id": oid}, {"$inc": {"completed_repeats": 1}})
+
+
+async def set_cursor(db, task_id: str, cycle: int, stop_index: int) -> None:
+    """Persist the last reached stop. Called on arrivals only, never per tick."""
+    oid = to_object_id(task_id)
+    if oid is not None:
+        await _col(db).update_one(
+            {"_id": oid},
+            {"$set": {"cursor": {"cycle": cycle, "stop_index": stop_index}, "updated_at": utcnow()}},
+        )
 
 
 async def delete(db, task_id: str) -> bool:

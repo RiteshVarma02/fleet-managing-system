@@ -8,27 +8,31 @@ Design notes (server load):
   completed / finished), never per poll tick.
 * One scheduler loop for the whole fleet assigns pending requests to idle
   robots, so operators can queue work without picking a robot.
+
+A mission is an ordered list of waypoint names repeated N times. In "step"
+mode ("move on click") the task blocks in `awaiting_approval` after every
+arrival (except the very last stop) until an operator calls `approve_task`.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from app.core.config import settings
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.core.logging_config import get_logger
 from app.db.documents import TaskStatus
 from app.db.mongo import get_database
-from app.db.repositories import locations_repo, pending_requests_repo, robots_repo, tasks_repo
+from app.db.repositories import pending_requests_repo, robots_repo, tasks_repo
 from app.ros.capabilities.waypoint_nav import (
     NAV_CANCELLED,
     NAV_PAUSED,
     NAV_SUCCEEDED,
     TERMINAL_NAV_STATES,
 )
-from app.services import robot_service
+from app.services import fleet_file_service, robot_service
 
 logger = get_logger(__name__)
 
@@ -53,6 +57,8 @@ class TaskEngine:
         # event blocks `_run` until the operator resumes (or cancels).
         self._pause_flags: Dict[str, bool] = {}
         self._resume_events: Dict[str, asyncio.Event] = {}
+        # "Move on click": blocks `_run` after an arrival until approved.
+        self._approve_events: Dict[str, asyncio.Event] = {}
 
     # ------------------------------------------------------------------
     # lifecycle
@@ -130,7 +136,7 @@ class TaskEngine:
         hold = _safety_hold(controller)
         if hold:
             raise ConflictError(f"Robot '{robot_id}' cannot move: {hold}", code="safety_hold")
-        await self._resolve_legs(db, task)
+        stops = await self._stops_of(db, task)
 
         task = await tasks_repo.set_status(
             db, task_id, TaskStatus.running, message="Execution started"
@@ -140,6 +146,11 @@ class TaskEngine:
             "task_id": task_id,
             "robot_id": robot_id,
             "leg": None,
+            "stops": stops,
+            "mode": str(task.get("mode") or "continuous"),
+            "cycle": 1,
+            "stop_index": 0,
+            "next_stop": stops[0],
             "completed_repeats": 0,
             "repeats": int(task.get("repeats") or 1),
             "status": TaskStatus.running.value,
@@ -147,6 +158,7 @@ class TaskEngine:
         }
         self._pause_flags.pop(task_id, None)
         self._resume_events[task_id] = asyncio.Event()
+        self._approve_events[task_id] = asyncio.Event()
         self._running[task_id] = asyncio.create_task(
             self._run(task_id, robot_id), name=f"task-{task_id}"
         )
@@ -154,9 +166,10 @@ class TaskEngine:
 
     async def cancel_task(self, db, task_id: str) -> None:
         self._pause_flags.pop(task_id, None)
-        event = self._resume_events.get(task_id)
-        if event is not None:
-            event.set()  # unblock a paused `_run` so cancellation is immediate
+        for events in (self._resume_events, self._approve_events):
+            event = events.get(task_id)
+            if event is not None:
+                event.set()  # unblock a paused/waiting `_run` so cancellation is immediate
         task = self._running.pop(task_id, None)
         progress = self._progress.get(task_id) or {}
         robot_id = str(progress.get("robot_id") or "")
@@ -181,6 +194,11 @@ class TaskEngine:
             raise ConflictError("Task is not running", code="task_not_running")
         if self._pause_flags.get(task_id):
             raise ConflictError("Task is already paused", code="task_already_paused")
+        if (self._progress.get(task_id) or {}).get("status") == TaskStatus.awaiting_approval.value:
+            raise ConflictError(
+                "The robot is standing still, waiting for approval; there is nothing to pause",
+                code="awaiting_approval",
+            )
 
         progress = self._progress.get(task_id) or {}
         robot_id = str(progress.get("robot_id") or "")
@@ -236,22 +254,32 @@ class TaskEngine:
             event.set()
         return dict(self._progress.get(task_id) or {})
 
+    async def approve_task(self, db, task_id: str) -> Dict[str, Any]:
+        """Operator presses "go": release a mission waiting in `step` mode."""
+        progress = self._progress.get(task_id)
+        if progress is None or not self.is_running(task_id):
+            raise ConflictError("Task is not running", code="task_not_running")
+        if progress.get("status") != TaskStatus.awaiting_approval.value:
+            raise ConflictError("Task is not waiting for approval", code="task_not_awaiting")
+        controller = robot_service.require_controller(str(progress.get("robot_id") or ""), "waypoint_nav")
+        hold = _safety_hold(controller)
+        if hold:
+            raise ConflictError(f"Cannot move: {hold}", code="safety_hold")
+        event = self._approve_events.get(task_id)
+        if event is not None:
+            event.set()
+        return dict(progress)
+
     # ------------------------------------------------------------------
     # execution
     # ------------------------------------------------------------------
-    async def _resolve_legs(self, db, task: Dict[str, Any]) -> List[Dict[str, Any]]:
-        legs: List[Dict[str, Any]] = []
-        for field in ("from_location_id", "to_location_id"):
-            location_id = task.get(field)
-            if not location_id:
-                continue
-            location = await locations_repo.get(db, str(location_id))
-            if location is None:
-                raise ValidationError(f"Location '{location_id}' referenced by the task is missing")
-            legs.append(location)
-        if not legs:
-            raise ValidationError("Task must reference at least one location")
-        return legs
+    async def _stops_of(self, db, task: Dict[str, Any]) -> List[str]:
+        """The mission's waypoint names, checked against the active graph."""
+        stops = [str(s).strip() for s in (task.get("stops") or []) if str(s).strip()]
+        if not stops:
+            raise ValidationError("Mission has no stops")
+        await validate_stops(db, stops)
+        return stops
 
     async def _run(self, task_id: str, robot_id: str) -> None:
         db = get_database()
@@ -262,21 +290,33 @@ class TaskEngine:
                 task = await tasks_repo.get(db, task_id)
                 if task is None:
                     return
-                legs = await self._resolve_legs(db, task)
+                stops = await self._stops_of(db, task)
+                mode = str(task.get("mode") or "continuous")
                 repeats = max(1, int(task.get("repeats") or 1))
                 repeats = min(repeats, settings.max_task_repeats)
 
                 for cycle in range(repeats):
-                    leg_index = 0
-                    while leg_index < len(legs):
+                    index = 0
+                    while index < len(stops):
                         try:
-                            await self._drive_to(db, task_id, robot_id, legs[leg_index])
+                            await self._drive_to(db, task_id, robot_id, stops[index])
                         except _TaskPaused as paused:
                             # Robot is halted. Block here until resume/cancel;
-                            # then retry the same leg.
+                            # then retry the same stop.
                             await self._wait_while_paused(db, task_id, str(paused))
                             continue
-                        leg_index += 1
+                        await tasks_repo.set_cursor(db, task_id, cycle + 1, index)
+                        last = cycle == repeats - 1 and index == len(stops) - 1
+                        upcoming = stops[(index + 1) % len(stops)]
+                        index += 1
+                        progress = self._progress.setdefault(task_id, {})
+                        progress.update(
+                            cycle=cycle + 1 if index < len(stops) else min(cycle + 2, repeats),
+                            stop_index=index % len(stops),
+                            next_stop=None if last else upcoming,
+                        )
+                        if mode == "step" and not last:
+                            await self._wait_for_approval(db, task_id, upcoming)
                     await tasks_repo.increment_repeats(db, task_id)
                     self._progress.setdefault(task_id, {})["completed_repeats"] = cycle + 1
                     self._progress.setdefault(task_id, {})["message"] = (
@@ -314,10 +354,24 @@ class TaskEngine:
             # already maps to a cancelled finish.
             await event.wait()
 
-    async def _drive_to(self, db, task_id: str, robot_id: str, location: Dict[str, Any]) -> None:
+    async def _wait_for_approval(self, db, task_id: str, next_stop: str) -> None:
+        """Move on click: stand still at the stop until `approve_task`."""
+        event = self._approve_events.setdefault(task_id, asyncio.Event())
+        event.clear()
+        message = f"Waiting for approval to go to {next_stop}"
+        progress = self._progress.get(task_id)
+        if progress is not None:
+            progress["status"] = TaskStatus.awaiting_approval.value
+            progress["message"] = message
+        await tasks_repo.set_status(db, task_id, TaskStatus.awaiting_approval, message=message)
+        await event.wait()  # cancel_task sets the event and cancels `_run`
+        if progress is not None:
+            progress["status"] = TaskStatus.running.value
+        await tasks_repo.set_status(db, task_id, TaskStatus.running, message=f"Approved: {next_stop}")
+
+    async def _drive_to(self, db, task_id: str, robot_id: str, waypoint: str) -> None:
         """Drive one leg: publish the waypoint NAME, wait for a true arrival."""
         controller = robot_service.require_controller(robot_id, "waypoint_nav")
-        waypoint = str(location.get("name") or "")
         # Entry check closes the between-legs race: a pause (or an E-stop)
         # landing just after the previous leg returned must stop the next goal.
         if self._pause_flags.get(task_id):
@@ -371,6 +425,7 @@ class TaskEngine:
         self._progress.pop(task_id, None)
         self._pause_flags.pop(task_id, None)
         self._resume_events.pop(task_id, None)
+        self._approve_events.pop(task_id, None)
         current = await tasks_repo.get(db, task_id)
         if current is not None and str(current.get("status")) not in {
             TaskStatus.completed.value,
@@ -407,10 +462,10 @@ class TaskEngine:
         robot_id = candidates[0]
         task = await tasks_repo.create(
             db,
-            task_type=str(request.get("task_type") or "pick_drop"),
+            task_type=str(request.get("task_type") or "route"),
             robot_id=robot_id,
-            from_location_id=request.get("from_location_id"),
-            to_location_id=request.get("to_location_id"),
+            stops=list(request.get("stops") or []),
+            mode=str(request.get("mode") or "continuous"),
             repeats=int(request.get("repeats") or 1),
             created_by=str(request.get("created_by") or "scheduler"),
         )
@@ -433,19 +488,46 @@ def _safety_hold(controller: Any) -> Optional[str]:
 task_engine = TaskEngine()
 
 
-async def start_pick_drop(
-    db, robot_id: str, pickup_location_id: str, drop_location_id: str, repeats: int, created_by: str
-) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Create a pick-and-drop task and immediately begin executing it."""
+async def validate_stops(db, stops: List[str]) -> None:
+    """Reject waypoint names that are not in the active graph.
+
+    With no graph uploaded yet there is nothing to check against, so names are
+    accepted as typed (first bring-up); once a graph exists typos fail fast
+    instead of timing out on the robot.
+    """
+    known = await fleet_file_service.waypoint_names(db)
+    if not known:
+        return
+    unknown = [name for name in dict.fromkeys(stops) if name not in known]
+    if unknown:
+        raise ValidationError(
+            "Unknown waypoint(s) not in the active graph: "
+            + ", ".join(unknown)
+            + ". Check the spelling or upload the current graph."
+        )
+
+
+async def start_mission(
+    db, robot_id: str, stops: List[str], repeats: int, mode: str, created_by: str,
+    task_type: str = "route",
+) -> Dict[str, Any]:
+    """Create a mission and immediately begin executing it."""
+    await validate_stops(db, stops)
     task = await tasks_repo.create(
-        db,
-        task_type="pick_drop",
-        robot_id=robot_id,
-        from_location_id=pickup_location_id,
-        to_location_id=drop_location_id,
-        repeats=repeats,
-        created_by=created_by,
+        db, task_type=task_type, robot_id=robot_id, stops=stops, repeats=repeats,
+        mode=mode, created_by=created_by,
     )
     task_id = str(task["id"])
-    started = await task_engine.start_task(db, task_id)
-    return started or task, task_engine.progress(task_id) or {}
+    try:
+        started = await task_engine.start_task(db, task_id)
+    except Exception:
+        # Do not leave an orphan "pending" mission behind a rejected click.
+        await tasks_repo.set_status(db, task_id, TaskStatus.cancelled, message="Could not start")
+        raise
+    return {"task": started or task, "progress": task_engine.progress(task_id) or {}}
+
+
+async def send_waypoint(db, robot_id: str, waypoint: str, created_by: str) -> Dict[str, Any]:
+    """The text box: a one-stop mission."""
+    return await start_mission(db, robot_id, [waypoint], 1, "continuous", created_by,
+                               task_type="waypoint")
