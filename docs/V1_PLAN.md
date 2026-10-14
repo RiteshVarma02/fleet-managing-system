@@ -11,6 +11,34 @@ Baseline: V0 = `taskModification` / `V0Draft` @ `05d568b`
 
 ---
 
+## 0. Decisions & progress (updated 2026-10-15)
+
+**Decisions from review**
+
+| Topic | Decision |
+| --- | --- |
+| Topics | **Never hard-coded.** Every topic name, type and QoS lives in `backend/config/fleet_topics.yaml`, per robot type. |
+| Map + graph | **One** map and **one** waypoint graph JSON for the whole fleet; every robot keeps its own copy of the same files. |
+| Pushing files | `tools/fleet_files/push_fleet_files.py` → `fleet_file_receiver.py` on each robot. The website upload (Phase 2) uses the same protocol. |
+| Dispatch | The server publishes `/{robot}/amr/goal` directly; topics come from the config. |
+| Text box | Plain waypoint id/name with autocomplete; the S.P.A.R.K. natural-language model is deferred to V1.1. |
+| `stop_active` | The physical E-stop button. Pressing it halts the robot and **pauses** the mission. After release the robot waits until an operator presses Continue. |
+| Roles | **developer** = ultimate access (everything) > admin > operator. |
+| Robot types | Must stay extensible: `robot_types` in the YAML, with `extends` to inherit the base waypoint AMR. |
+| Battery | Robots publish `battery_state`; it is shown in the UI. |
+
+**Progress on branch `v1-waypoint-fleet`**
+
+- [x] Phase 0: untracked `__pycache__`, fixed `.gitignore`
+- [x] Phase 1: single domain, config-driven topics, waypoint_nav, E-stops, status model (`c5135b3`)
+- [x] Fleet file push script + robot receiver (`1b6ee57`)
+- [ ] Phase 2: fleet graph + map storage, upload/download on the website, push via the same protocol
+- [ ] Phase 3: multi-stop missions (continuous / on-click), single-waypoint send
+- [ ] Phase 4: developer / admin / operator roles
+- [ ] Phase 5: frontend (still calls some removed V0 endpoints until then)
+
+---
+
 ## 1. What V1 is
 
 V0 is a multi-domain Nav2 fleet manager: every robot has its own `ROS_DOMAIN_ID`, a
@@ -25,10 +53,10 @@ V1 is a **single-domain, waypoint-graph fleet manager**:
 | Transport | one domain per robot + `domain_bridge` | one shared domain, no bridge |
 | Topic names | robot `/odom` remapped to server `/{id}/odom` | `/{robotName}/{topic}` everywhere, no remap |
 | Navigation | Nav2 `NavigateToPose` via action forwarder | waypoint route_manager (`amr/goal`, `amr/final_goal_reached`, `amr/route`) |
-| Destinations | `locations` collection, typed in by hand | waypoints from each robot's graph JSON (`{"waypoints":[{id,name,…}]}`) |
+| Destinations | `locations` collection, typed in by hand | waypoints from the fleet graph JSON (`{"waypoints":[{id,name,…}]}`) |
 | Missions | pickup → drop × repeats | ordered list of N waypoints × repeats, continuous or step-approval |
-| Robot files | none | per-robot graph JSON + map upload/download |
-| Roles | admin / operator / viewer | admin / developer / operator |
+| Fleet files | none | one graph JSON + one map, pushed to every robot, upload/download |
+| Roles | admin / operator / viewer | developer (all) / admin / operator |
 | Map | separate Maps page | zoomable, expandable map embedded in operator + admin panels |
 | Safety | software e-stop only | + physical stop button state from `/{robotName}/stop_active` |
 
@@ -49,7 +77,7 @@ robot stack (route_manager, motion_controller, traffic_manager_node) needs no ch
 | `battery_state` | `/{robot}/battery_state` | `BatteryState` | robot → server | battery (if published) |
 | `cmd_vel` | `/{robot}/cmd_vel` | `Twist` | server → robot | teleop joystick |
 | `emergency_stop` | `/{robot}/emergency_stop` | `Bool` | server → robot | software e-stop |
-| `task` / `task_status` | `/{robot}/fleet/task`, `/{robot}/fleet/task_status` | `String` JSON | both | **not used by the server** (see §7 Q2) |
+| `task` / `task_status` | `/{robot}/fleet/task`, `/{robot}/fleet/task_status` | `String` JSON | both | **not used by the server** (it only supports pickup→drop) |
 
 Rules carried over from `mission_commander.py`:
 
@@ -97,7 +125,7 @@ name, and admins can override it so it matches the namespace the robot actually 
 * Config: all `domain_bridge_*`, `slam_launch_command`, per-robot `ros_domain_id`. `GET /robots/bridges` and `GET /robots/domains/next` go away, and the domain field disappears from the approval form.
 
 **Change**
-* `topics_registry.py`: one `server == robot` name, `"/{robot_id}/amr/goal"` etc. Drop the `direction` / `robot` fields, which only existed for the bridge. Collapse robot types to `waypoint_amr` (keep `forklift_bot` / `arm_bot` only if those robots exist, see Q7).
+* ✅ `topics_registry.py` + `config/fleet_topics.yaml`: one topic name per robot (no remap), `"/{robot_id}/amr/goal"` etc. Drop the `direction` / `robot` fields, which only existed for the bridge. Robot types are defined in `fleet_topics.yaml` (`waypoint_amr` + commented forklift/arm examples using `extends`).
 * `manager.start_controller(robot_id, robot_type)`: no bridge, just node + executor.
 
 **Add**
@@ -110,7 +138,7 @@ name, and admins can override it so it matches the namespace the robot actually 
     < `arrival_debounce_ms` after a send, unless the pose is already within `arrival_radius_m` of
     the target (needs waypoint x/y from the graph). This is the V1 equivalent of V0's epoch check.
 * `capabilities/safety.py`: subscribe `stop_active`. When it is active: cancel any running leg (pause the task, don't
-  fail it), set `stop_active=True` in telemetry. Released → stays paused until the operator resumes (see Q4).
+  fail it), set `stop_active=True` in telemetry. Released → stays paused until the operator presses Continue.
 * `telemetry` capability: subscribe `amcl_pose` (RELIABLE + TRANSIENT_LOCAL QoS, as in
   `mission_commander.py`) → `position`, and use it as the liveness heartbeat.
 
@@ -132,28 +160,30 @@ and sent in every WebSocket frame:
 
 **Tests**: registry resolves `/{robot}/amr/goal`, the status-derivation table, and the stale-arrival guard.
 
-### Phase 2 — Robot files: graph JSON + map (WS-C)
+### Phase 2 — Fleet files: one graph JSON + one map (WS-C)
 
-Server is the source of truth, with versioned copies per robot.
+The server is the source of truth: **one** active graph and **one** active map for the
+fleet, versioned. Every robot gets the same copy, and the server tracks which
+version each robot has confirmed (from the `file_ack` sha256).
 
-* Mongo `robot_files` collection: `{robot_id, kind: "graph"|"map", version, filename, sha256, size, uploaded_by, uploaded_at, active}`.
+* Mongo `fleet_files` collection: `{kind: "graph"|"map", version, filename, sha256, size, uploaded_by, uploaded_at, active}`
+  plus `robot_file_state: {robot_id, kind, version, sha256, acked_at}`.
   Blobs in GridFS (map PGM can be ~1 MB; fine, but don't inline it in documents).
 * Map = `map.yaml` + `map.pgm` (or `.png`) uploaded together. Validate the YAML keys
   (`image`, `resolution`, `origin`) and reuse the existing grid↔image conversion + its tests.
 * Graph JSON validation: `waypoints[]` with unique `id` (int) and unique `name`. Keep extra
   fields (x/y/edges) as-is. Reject on error with line-level messages.
-* Endpoints (`/api/v1/robots/{id}/files/…`):
-  * `GET  …/graph`, `GET …/map` → download active version (file attachment)
-  * `POST …/graph`, `POST …/map` → upload new version (multipart), becomes active
-  * `GET  …/history`, `POST …/{kind}/{version}/activate` → rollback
-  * `POST …/sync` → push the active files to the robot (see Q3)
-* **Waypoints come from the active graph.** `GET /robots/{id}/waypoints` replaces the global
-  `locations` collection for missions. `locations` endpoints and repo are removed after the
-  frontend switches.
-* Delivery to the robot is an open decision (Q3). The recommendation is a small robot-side `fleet_agent.py` that
-  receives files on `/{robot}/fleet/file_update` (String JSON: kind, version, sha256, base64
-  payload), writes them to the configured paths, restarts route_manager, and acks on
-  `/{robot}/fleet/file_ack`. Download from the robot = agent publishes its current files on request.
+* Endpoints (`/api/v1/fleet-files/…`):
+  * `GET  /graph`, `GET /map` → download the active version (file attachment)
+  * `POST /graph`, `POST /map` → upload a new version (multipart, validated), which becomes active
+  * `GET  /history`, `POST /{kind}/{version}/activate` → rollback
+  * `POST /push` (`{robots?: [...]}`) → send the active files to all or some robots
+  * `GET  /status` → per robot: confirmed version vs active version ("robot1 is on v3, active is v4")
+* **Waypoints come from the active graph.** `GET /waypoints` replaces the `locations`
+  collection for missions. The `locations` endpoints and repo are removed once the frontend switches.
+* Delivery uses the protocol already implemented in `tools/fleet_files/fleet_file_protocol.py`
+  (`/{robot}/fleet/file_update` → `/{robot}/fleet/file_ack`). The backend imports the same module, so the
+  CLI script and the website can never disagree.
 
 ### Phase 3 — Missions: single waypoint + multi-stop sequences (WS-D)
 
@@ -194,20 +224,22 @@ It only assigns robots whose active graph contains every stop.
 
 ### Phase 4 — Roles: admin / developer / operator (WS-F)
 
-| Capability | Admin | Developer | Operator |
+**Developer is the ultimate role** (your account) and can do everything.
+
+| Capability | Developer | Admin | Operator |
 | --- | :-: | :-: | :-: |
 | Login, see fleet + status + map | ✓ | ✓ | ✓ |
-| Send waypoint, run / approve / pause / cancel missions | ✓ | ✓ | ✓ |
+| Send waypoint, run / approve / pause / continue / cancel missions | ✓ | ✓ | ✓ |
 | Software e-stop (single + all) | ✓ | ✓ | ✓ |
-| Teleop joystick | ✓ | ✓ | ✗ *(Q5)* |
-| Upload / download / rollback robot graph JSON + map, push to robot | ✓ | ✓ | ✗ |
-| Live topic / debug view (raw status, last messages, file sync log) | ✓ | ✓ | ✗ |
-| Approve / reject / delete robots | ✓ | ✗ | ✗ |
-| Manage users and roles | ✓ | ✗ | ✗ |
+| Teleop joystick | ✓ | ✓ | ✗ |
+| Upload / download / rollback graph JSON + map, push to robots | ✓ | ✓ | ✗ |
+| Approve / reject / add / delete robots | ✓ | ✓ | ✗ |
+| Manage operator + admin users | ✓ | ✓ | ✗ |
+| Manage developer users, reload topic config, debug/topic view, system settings | ✓ | ✗ | ✗ |
 
-* `Role` enum: `admin`, `developer`, `operator`. Migrate existing `viewer` users → `operator`
-  (or deactivate them) with a one-off startup migration.
-* Dependencies: `require_admin`, `require_developer` (admin|developer), `require_operator` (all three).
+* `Role` enum: `developer`, `admin`, `operator`, as a strict hierarchy (developer ⊃ admin ⊃ operator).
+  A one-off startup migration moves existing `viewer` users → `operator`.
+* Dependencies: `require_operator` (all), `require_admin` (admin|developer), `require_developer` (developer).
   Fix the V0 audit gaps M1/M2 while doing this (map and location writes accepted any user).
 * Bootstrap env: `BOOTSTRAP_DEVELOPER_PASSWORD` alongside the admin/operator ones.
 * Frontend: one login page. The role decides the landing panel: `/admin`, `/developer`, `/operator`.
@@ -240,12 +272,12 @@ domain field in approval, Nav2 goal-click, locations CRUD.
 
 **Panels**
 * **Operator** `/operator`: status board, map (zoomable), robot selector, waypoint box, mission builder, mission progress, e-stop.
-* **Admin** `/admin`: everything Operator has, plus robot approval/deletion, users and roles, robot files.
-* **Developer** `/developer`: robot files, teleop, debug/topic view, map.
+* **Admin** `/admin`: everything Operator has, plus robot approval/deletion, users, fleet files.
+* **Developer** `/developer`: everything Admin has, plus the topic-config view/reload, debug view and developer users.
 
 ### Phase 6 — Robot-side + integration + docs
 
-* `fleet_agent.py` (if Q3 = agent): file receive/apply/ack, optional registration announce.
+* `tools/fleet_files/fleet_file_receiver.py` is already written. Run it on every robot (see its README).
 * Robots stop running `mission_commander.py` while under fleet control, because two dispatchers on one
   `amr/goal` would conflict. Keep it for manual CLI testing only.
 * End-to-end checklist on hardware: offline → online detection, single waypoint, 5-stop × 50
@@ -287,21 +319,10 @@ Each step keeps `pytest` + `tsc --noEmit` green.
 
 ---
 
-## 7. Open questions (need answers before the phase they block)
+## 7. Open questions
 
-1. **Waypoint text box (item 1):** plain id/name entry, or free-text commands ("go to dock A
-   then charging") through the S.P.A.R.K. model in `send_task_updated.py`? The NL route adds TensorFlow
-   to the server and a model/vocab deployment. Recommendation: plain entry in V1, NL as V1.1.
-2. **Dispatch path:** the server publishes `amr/goal` directly (recommended: needed for N stops,
-   repeats and step approval), or the server sends JSON to a robot-side `mission_commander` via
-   `fleet/task` (only supports pickup→drop today)?
-3. **Getting files onto the robot:** (a) robot-side `fleet_agent.py` over ROS topics
-   (recommended), (b) robot pulls via HTTP from the server, or (c) the website only stores and serves
-   files and someone copies them manually. Which paths and which restart command on the robot?
-4. **`stop_active`:** message type (`std_msgs/Bool`?), latched or periodic? When the button is
-   released, should the mission auto-resume or wait for the operator?
-5. **Developer vs operator:** is teleop operator-allowed? Should developers see the user list?
-6. **Maps:** does every robot have its own map, or do all robots share one floor map? This decides
-   whether the panel shows one combined map or the selected robot's map.
-7. **Robot types:** keep forklift/arm capabilities, or are all V1 robots plain waypoint AMRs?
-8. **Battery:** do the robots publish `battery_state`? If not, hide it.
+All of the original questions are answered (see §0). Still to confirm on hardware:
+
+1. `stop_active` message type is assumed to be `std_msgs/Bool` (true = pressed). If it differs, change
+   `type:` in `fleet_topics.yaml`; the code reads `.data`.
+2. The receiver's `--on-update` restart command for route_manager on your robots.
