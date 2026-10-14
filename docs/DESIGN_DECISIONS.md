@@ -101,3 +101,18 @@ Teleop = `/robots/move` and `/robots/stop` (a velocity zero). E-stop = `/robots/
 
 ## D32. One set of mission controls, addressed by robot
 `POST /tasks/robot/{robot_id}/{pause|resume|cancel}`. `resume` also means "go" for a mission waiting for approval (move on click), so the operator has one Continue button for both cases. The old per-task pause/resume/cancel/approve routes were removed.
+
+## D33. One map component for every page, with markers that do not scale
+The map scales with CSS transform; markers are counter-scaled so a robot stays the same size at any zoom. Zoom = wheel, buttons or double-click; pan = drag; fullscreen = Fullscreen API on the map element itself so overlays stay. Reason: operators need to read small waypoint labels without the robots turning into blobs.
+
+## D34. Status colour has one source of truth (`lib/robot-status.ts`)
+Badge, map dot and card border all read the same table. A pressed physical E-stop or a software E-stop is always solid red and pulsing, whatever else is going on. Waiting-for-click is amber and pulsing so a stalled move-on-click mission is noticed.
+
+## D35. The map click is a shortcut into the same two inputs
+Clicking a waypoint on the map fills the text box and appends a mission stop. There is no separate "map mode". Mission stops show as numbered pins on the map so the route is visible before it starts.
+
+## D36. UI mirrors the safety rules instead of being the only enforcement
+Send/Start/Continue are disabled with a visible reason during an E-stop, when offline, or when the robot already has a mission; the joystick is disabled during an E-stop. The server still refuses all of these (D7, D30), so the UI can never be the only guard.
+
+## D37. Login page picks the panel; the server checks it
+Three tabs (Operator / Admin / Developer) send `portal`. After login each role lands on its home (operator: Operate; admin: Admin; developer: Developer). Nav items appear by role, but route access is enforced by the API, not by hiding links.

@@ -142,3 +142,25 @@ export const api = {
     apiRequest<T>(path, { method: body === undefined ? "GET" : "POST", body, raw: true }),
   upload: <T>(path: string, formData: FormData) => uploadRequest<T>(path, formData),
 };
+
+/** Authenticated file download (a plain <a href> cannot send the bearer token). */
+export async function downloadFile(path: string, fallbackName: string): Promise<void> {
+  const headers: Record<string, string> = {};
+  if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+  const response = await fetch(`${API_BASE}${path}`, { headers });
+  if (response.status === 401) {
+    onUnauthorized?.();
+    throw await parseError(response);
+  }
+  if (!response.ok) throw await parseError(response);
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const name = /filename="?([^";]+)"?/.exec(disposition)?.[1] ?? fallbackName;
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}

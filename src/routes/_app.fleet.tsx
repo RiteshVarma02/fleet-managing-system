@@ -1,222 +1,31 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, CircleSlash, Plug, PlugZap, Trash2 } from "lucide-react";
+import { Plug, PlugZap, Trash2 } from "lucide-react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
+import { AddRobotCard, PendingCard, UsersCard } from "@/components/fleet/AdminPanels";
+import { FleetFilesPanel } from "@/components/fleet/FleetFilesPanel";
 import { FleetMap } from "@/components/fleet/FleetMap";
 import { RobotCard } from "@/components/fleet/RobotCard";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api/client";
 import {
-  bridgesQuery,
-  currentMapQuery,
-  locationsQuery,
-  nextDomainQuery,
-  pendingRegistrationsQuery,
+  mapPreviewQuery,
   queryKeys,
-  robotTypesQuery,
   robotsQuery,
   tasksQuery,
+  waypointsQuery,
 } from "@/lib/api/queries";
 import { useFleetTelemetry } from "@/lib/api/telemetry";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { useAuth } from "@/lib/auth";
-import type { BridgeStatus, DomainInfo, Robot } from "@/lib/api/types";
-
 
 export const Route = createFileRoute("/_app/fleet")({
   ssr: false,
-  head: () => ({
-    meta: [
-      { title: "Fleet Monitor — Robot Fleet Control" },
-      {
-        name: "description",
-        content: "Administrator view of every robot: live positions, battery, connectivity, tasks and pending registrations.",
-      },
-      { property: "og:title", content: "Fleet Monitor — Robot Fleet Control" },
-      { property: "og:description", content: "Administrator view of every robot in the autonomous fleet." },
-      { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary_large_image" },
-    ],
-  }),
-  component: FleetMonitorPage,
+  head: () => ({ meta: [{ title: "Fleet admin — Robot Fleet Control" }] }),
+  component: FleetAdminPage,
 });
-
-function FleetMonitorPage() {
-  const { isAdmin } = useAuth();
-  const navigate = useNavigate();
-  const queryClient = useQueryClient();
-  const [selected, setSelected] = useState<string | null>(null);
-
-  // One socket for the whole tab; the fleet poll drops to 30s while it is up.
-  const live = useFleetTelemetry();
-
-  const { data: robots = [], isLoading } = useQuery(robotsQuery(live));
-  const { data: map } = useQuery(currentMapQuery());
-  const { data: locations = [] } = useQuery(locationsQuery());
-  const { data: tasks = [] } = useQuery(tasksQuery());
-  const { data: pending = [] } = useQuery({ ...pendingRegistrationsQuery(), enabled: isAdmin });
-  const { data: bridges = [] } = useQuery(bridgesQuery(isAdmin));
-
-
-  const invalidateRobots = () => queryClient.invalidateQueries({ queryKey: queryKeys.robots });
-
-  const connection = useMutation({
-    mutationFn: ({ robotId, action }: { robotId: string; action: "connect" | "disconnect" }) =>
-      api.post<Robot>(`/robots/${action}`, { robot_id: robotId }),
-    onSuccess: (_result, variables) => {
-      toast.success(`${variables.robotId} ${variables.action}ed`);
-      invalidateRobots();
-    },
-    onError: (error: Error) => toast.error(error.message),
-  });
-
-  const removeRobot = useMutation({
-    mutationFn: (robotId: string) => api.del(`/robots/${robotId}`),
-    onSuccess: () => {
-      toast.success("Robot removed");
-      invalidateRobots();
-    },
-    onError: (error: Error) => toast.error(error.message),
-  });
-
-  const summary = useMemo(() => {
-    const online = robots.filter((robot) => robot.status === "online").length;
-    const errored = robots.filter((robot) => robot.status === "error").length;
-    const battery = robots.length
-      ? Math.round(robots.reduce((total, robot) => total + robot.battery, 0) / robots.length)
-      : 0;
-    const running = tasks.filter((task) => task.status === "running").length;
-    return { online, errored, battery, running };
-  }, [robots, tasks]);
-
-  return (
-    <div className="mx-auto w-full max-w-[1600px] p-4">
-      <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">Fleet monitor</h1>
-          <p className="text-sm text-muted-foreground">Live overview of every registered robot</p>
-        </div>
-        <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <Stat label="Robots" value={robots.length} />
-          <Stat label="Online" value={summary.online} tone="text-chart-2" />
-          <Stat label="Faults" value={summary.errored} tone={summary.errored ? "text-destructive" : undefined} />
-          <Stat label="Avg battery" value={`${summary.battery}%`} />
-        </dl>
-      </div>
-
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
-        <section className="space-y-4">
-          <FleetMap
-            map={map}
-            robots={robots}
-            locations={locations}
-            selectedId={selected}
-            onSelect={setSelected}
-            className="aspect-[16/10] w-full"
-          />
-
-          <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">
-            {isLoading && <p className="text-sm text-muted-foreground">Loading fleet…</p>}
-            {!isLoading && robots.length === 0 && (
-              <p className="text-sm text-muted-foreground">No robots registered yet.</p>
-            )}
-            {robots.map((robot) => (
-              <RobotCard
-                key={robot.id}
-                robot={robot}
-                selected={robot.id === selected}
-                onSelect={setSelected}
-                actions={
-                  <>
-                    {robot.status === "online" ? (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          connection.mutate({ robotId: robot.id, action: "disconnect" });
-                        }}
-                      >
-                        <PlugZap className="mr-1 size-4" /> Disconnect
-                      </Button>
-                    ) : (
-                      <Button
-                        size="sm"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          connection.mutate({ robotId: robot.id, action: "connect" });
-                        }}
-                      >
-                        <Plug className="mr-1 size-4" /> Connect
-                      </Button>
-                    )}
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        navigate({ to: "/console", search: { robot: robot.id } });
-                      }}
-                    >
-                      Operate
-                    </Button>
-                    {isAdmin && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        aria-label={`Remove ${robot.name}`}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          removeRobot.mutate(robot.id);
-                        }}
-                      >
-                        <Trash2 className="size-4" />
-                      </Button>
-                    )}
-                  </>
-                }
-              />
-            ))}
-          </div>
-        </section>
-
-        <aside className="space-y-4">
-          {isAdmin && <PendingPanel registrations={pending} />}
-          {isAdmin && <BridgePanel bridges={bridges} />}
-
-
-
-          <div className="rounded-lg border border-border bg-card p-4">
-            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              Recent tasks ({summary.running} running)
-            </h2>
-            <ul className="space-y-2 text-sm">
-              {tasks.slice(0, 8).map((task) => (
-                <li key={task.id} className="flex items-center justify-between gap-2 border-b border-border pb-2 last:border-0">
-                  <span className="truncate">
-                    <span className="font-medium">{task.type}</span>{" "}
-                    <span className="text-muted-foreground">{task.robot_id ?? "unassigned"}</span>
-                  </span>
-                  <span className="shrink-0 text-xs uppercase text-muted-foreground">{task.status}</span>
-                </li>
-              ))}
-              {tasks.length === 0 && <li className="text-muted-foreground">No tasks yet.</li>}
-            </ul>
-          </div>
-        </aside>
-      </div>
-    </div>
-  );
-}
 
 function Stat({ label, value, tone }: { label: string; value: string | number; tone?: string }) {
   return (
@@ -227,223 +36,195 @@ function Stat({ label, value, tone }: { label: string; value: string | number; t
   );
 }
 
-function BridgePanel({ bridges }: { bridges: BridgeStatus[] }) {
-  return (
-    <div className="rounded-lg border border-border bg-card p-4">
-      <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-        Domain bridges ({bridges.filter((bridge) => bridge.running).length}/{bridges.length})
-      </h2>
-      {bridges.length === 0 && (
-        <p className="text-sm text-muted-foreground">No bridge processes running.</p>
-      )}
-      <ul className="space-y-2 text-sm">
-        {bridges.map((bridge) => (
-          <li key={bridge.robot_id} className="flex items-center justify-between gap-2">
-            <span className="truncate font-medium">{bridge.robot_id}</span>
-            <span
-              className={`shrink-0 text-xs uppercase ${bridge.running ? "text-chart-2" : "text-destructive"}`}
-            >
-              {bridge.running ? "up" : "down"}
-              {bridge.restarts > 0 && ` · ${bridge.restarts} restarts`}
-            </span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-interface Draft {
-  name: string;
-  type: string;
-  /** ROS domain as typed text; empty string means "auto-assign". */
-  domain: string;
-}
-
-function PendingPanel({
-  registrations,
-}: {
-  registrations: { mac_address: string; hostname: string | null; ip_address: string | null }[];
-}) {
+function FleetAdminPage() {
+  const { isAdmin } = useAuth();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [drafts, setDrafts] = useState<Record<string, Draft>>({});
-  // Static registry — one request per session, so the picker always matches
-  // the robot types the backend can actually compose.
-  const { data: robotTypes = [] } = useQuery(robotTypesQuery());
-  const defaultType = robotTypes[0]?.name ?? "differential_drive";
+  const [selected, setSelected] = useState<string | null>(null);
+  const live = useFleetTelemetry();
 
-  // Next free ROS domain + domains held by live robots, so the field defaults
-  // to something free and can warn when the admin picks a taken one.
-  const { data: domainInfo } = useQuery(nextDomainQuery());
+  const { data: robots = [], isLoading } = useQuery(robotsQuery(live));
+  const { data: map } = useQuery(mapPreviewQuery());
+  const { data: waypointList } = useQuery(waypointsQuery());
+  const { data: tasks = [] } = useQuery(tasksQuery());
 
-  // Seed a draft per pending registration with the current next-free domain.
-  // Existing drafts are left untouched, so editing/approving one robot does not
-  // clobber the values the admin already set for the others.
-  useEffect(() => {
-    if (domainInfo == null) return;
-    setDrafts((prev) => {
-      const next = { ...prev };
-      for (const registration of registrations) {
-        if (!next[registration.mac_address]) {
-          next[registration.mac_address] = {
-            name: "",
-            type: defaultType,
-            domain: String(domainInfo.next_domain_id),
-          };
-        }
-      }
-      return next;
-    });
-  }, [domainInfo, registrations, defaultType]);
+  const refresh = () => queryClient.invalidateQueries({ queryKey: queryKeys.robots });
+  const connection = useMutation({
+    mutationFn: ({ id, action }: { id: string; action: "connect" | "disconnect" }) =>
+      api.post(`/robots/${action}`, { robot_id: id }),
+    onSuccess: refresh,
+    onError: (error: Error) => toast.error(error.message),
+  });
+  const remove = useMutation({
+    mutationFn: (id: string) => api.del(`/robots/${id}`),
+    onSuccess: () => {
+      toast.success("Robot removed");
+      refresh();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
 
-  const draftFor = (mac: string): Draft =>
-    drafts[mac] ?? {
-      name: "",
-      type: defaultType,
-      domain: domainInfo != null ? String(domainInfo.next_domain_id) : "",
+  const summary = useMemo(() => {
+    const count = (f: (s: string) => boolean) => robots.filter((r) => f(r.status)).length;
+    return {
+      online: count((s) => s !== "offline"),
+      moving: count((s) => s === "moving"),
+      stopped: robots.filter((r) => r.stop_active || r.emergency_active).length,
+      error: count((s) => s === "error"),
     };
-  const patch = (mac: string, changes: Partial<Draft>) =>
-    setDrafts((prev) => ({ ...prev, [mac]: { ...draftFor(mac), ...changes } }));
-
-  const approve = useMutation({
-    mutationFn: ({ mac, draft }: { mac: string; draft: Draft }) =>
-      api.post("/robots/registrations/approve", {
-        mac_address: mac,
-        custom_name: draft.name,
-        robot_type: draft.type,
-        ros_domain_id: draft.domain.trim() === "" ? null : Number(draft.domain),
-      }),
-    onSuccess: () => {
-      toast.success("Robot approved");
-      queryClient.invalidateQueries({ queryKey: queryKeys.pendingRegistrations });
-      queryClient.invalidateQueries({ queryKey: queryKeys.robots });
-      queryClient.invalidateQueries({ queryKey: queryKeys.bridges });
-      queryClient.invalidateQueries({ queryKey: queryKeys.domains });
-    },
-    onError: (error: Error) => toast.error(error.message),
-  });
-
-  const reject = useMutation({
-    mutationFn: (mac: string) => api.post("/robots/registrations/reject", { mac_address: mac }),
-    onSuccess: () => {
-      toast.success("Registration rejected");
-      queryClient.invalidateQueries({ queryKey: queryKeys.pendingRegistrations });
-    },
-    onError: (error: Error) => toast.error(error.message),
-  });
+  }, [robots]);
 
   return (
-    <div className="rounded-lg border border-border bg-card p-4">
-      <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-        Pending registrations ({registrations.length})
-      </h2>
-      {registrations.length === 0 && (
-        <p className="text-sm text-muted-foreground">No robots awaiting approval.</p>
-      )}
-      <ul className="space-y-3">
-        {registrations.map((registration) => {
-          const draft = draftFor(registration.mac_address);
-          const domainText = draft.domain.trim();
-          const domainNum = domainText === "" ? null : Number(domainText);
-          const domainInvalid =
-            domainNum !== null && (!Number.isInteger(domainNum) || domainNum < 1);
-          const heldBy =
-            domainNum !== null && !domainInvalid
-              ? (domainInfo?.used.find((used) => used.domain === domainNum) ?? null)
-              : null;
-          const isServerDomain =
-            domainNum !== null && !domainInvalid && domainNum === domainInfo?.server_domain_id;
-          const blockedBy =
-            isServerDomain ? "the server" : heldBy ? heldBy.robot_id : null;
-          const approveBlocked =
-            !draft.name.trim() || approve.isPending || domainInvalid || blockedBy !== null;
+    <div className="mx-auto w-full max-w-[1700px] p-4">
+      <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight">Fleet admin</h1>
+          <p className="text-sm text-muted-foreground">Robots, files and accounts</p>
+        </div>
+        <dl className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+          <Stat label="Robots" value={robots.length} />
+          <Stat label="Online" value={summary.online} tone="text-chart-2" />
+          <Stat label="Moving" value={summary.moving} />
+          <Stat
+            label="E-stopped"
+            value={summary.stopped}
+            tone={summary.stopped ? "text-red-500" : undefined}
+          />
+          <Stat
+            label="Faults"
+            value={summary.error}
+            tone={summary.error ? "text-destructive" : undefined}
+          />
+        </dl>
+      </div>
 
-          return (
-            <li key={registration.mac_address} className="rounded-md border border-border p-3">
-              <p className="font-mono text-xs">{registration.mac_address}</p>
-              <p className="text-xs text-muted-foreground">
-                {registration.hostname ?? "unknown host"} · {registration.ip_address ?? "no ip"}
-              </p>
-              <div className="mt-2 space-y-2">
-                <Input
-                  aria-label={`Name for ${registration.mac_address}`}
-                  placeholder="Robot name"
-                  value={draft.name}
-                  onChange={(event) =>
-                    patch(registration.mac_address, { name: event.target.value })
-                  }
-                  className="h-8"
-                />
-                <div className="flex gap-2">
-                  <Input
-                    aria-label={`ROS domain for ${registration.mac_address}`}
-                    placeholder={`Auto (next free: ${domainInfo?.next_domain_id ?? "…"})`}
-                    value={draft.domain}
-                    onChange={(event) =>
-                      patch(registration.mac_address, { domain: event.target.value })
+      <Tabs defaultValue="robots">
+        <TabsList>
+          <TabsTrigger value="robots">Robots</TabsTrigger>
+          <TabsTrigger value="files">JSON &amp; map files</TabsTrigger>
+          <TabsTrigger value="accounts">Accounts</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="robots" className="mt-4">
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
+            <section className="space-y-4">
+              <FleetMap
+                map={map}
+                robots={robots}
+                waypoints={waypointList?.waypoints}
+                selectedId={selected}
+                onSelect={setSelected}
+                className="h-[55vh] min-h-[340px] w-full"
+              />
+              <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">
+                {isLoading && <p className="text-sm text-muted-foreground">Loading fleet…</p>}
+                {!isLoading && robots.length === 0 && (
+                  <p className="text-sm text-muted-foreground">
+                    No robots yet. Add one on the right.
+                  </p>
+                )}
+                {robots.map((robot) => (
+                  <RobotCard
+                    key={robot.id}
+                    robot={robot}
+                    selected={robot.id === selected}
+                    onSelect={setSelected}
+                    actions={
+                      <>
+                        {robot.connected ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              connection.mutate({ id: robot.id, action: "disconnect" });
+                            }}
+                          >
+                            <PlugZap className="mr-1 size-4" /> Disconnect
+                          </Button>
+                        ) : (
+                          <Button
+                            size="sm"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              connection.mutate({ id: robot.id, action: "connect" });
+                            }}
+                          >
+                            <Plug className="mr-1 size-4" /> Connect
+                          </Button>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            navigate({ to: "/console", search: { robot: robot.id } });
+                          }}
+                        >
+                          Operate
+                        </Button>
+                        {isAdmin && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            aria-label={`Remove ${robot.name}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              remove.mutate(robot.id);
+                            }}
+                          >
+                            <Trash2 className="size-4" />
+                          </Button>
+                        )}
+                      </>
                     }
-                    inputMode="numeric"
-                    className={`h-8 w-28 ${blockedBy !== null || domainInvalid ? "border-destructive" : ""}`}
                   />
-                  <Select
-                    value={draft.type}
-                    onValueChange={(value) => patch(registration.mac_address, { type: value })}
-                  >
-                    <SelectTrigger
-                      className="h-8 flex-1"
-                      aria-label={`Robot type for ${registration.mac_address}`}
-                    >
-                      <SelectValue placeholder="Robot type" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {robotTypes.map((type) => (
-                        <SelectItem key={type.name} value={type.name}>
-                          {type.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Button
-                    size="sm"
-                    aria-label={`Approve ${registration.mac_address}`}
-                    disabled={approveBlocked}
-                    onClick={() =>
-                      approve.mutate({
-                        mac: registration.mac_address,
-                        draft: { ...draft, name: draft.name.trim() },
-                      })
-                    }
-                  >
-                    <CheckCircle2 className="size-4" />
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    aria-label="Reject registration"
-                    onClick={() => reject.mutate(registration.mac_address)}
-                  >
-                    <CircleSlash className="size-4" />
-                  </Button>
-                </div>
-                {domainInvalid && (
-                  <p className="text-xs text-destructive">
-                    Domain must be a whole number from 1 to 232 (0 and the server domain are reserved).
-                  </p>
-                )}
-                {blockedBy !== null && !domainInvalid && (
-                  <p className="text-xs text-destructive">
-                    Domain {domainNum} is {blockedBy === "the server"
-                      ? "the server's own domain and cannot be assigned"
-                      : `already in use by robot '${blockedBy}'`}
-                    .
-                  </p>
-                )}
+                ))}
               </div>
-            </li>
-          );
-        })}
-      </ul>
+            </section>
+
+            <aside className="space-y-4">
+              <PendingCard />
+              <AddRobotCard />
+              <section className="rounded-lg border border-border bg-card p-4">
+                <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                  Recent missions
+                </h2>
+                <ul className="space-y-2 text-sm">
+                  {tasks.slice(0, 8).map((task) => (
+                    <li
+                      key={task.id}
+                      className="flex items-center justify-between gap-2 border-b border-border pb-2 last:border-0"
+                    >
+                      <span className="truncate">
+                        <span className="font-medium">{task.robot_id ?? "unassigned"}</span>{" "}
+                        <span className="text-muted-foreground">
+                          {task.stops.join(" → ")}
+                          {task.repeats > 1 && ` ×${task.repeats}`}
+                        </span>
+                      </span>
+                      <span className="shrink-0 text-xs uppercase text-muted-foreground">
+                        {task.status.replace("_", " ")}
+                      </span>
+                    </li>
+                  ))}
+                  {tasks.length === 0 && (
+                    <li className="text-muted-foreground">No missions yet.</li>
+                  )}
+                </ul>
+              </section>
+            </aside>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="files" className="mt-4 max-w-4xl">
+          <FleetFilesPanel />
+        </TabsContent>
+
+        <TabsContent value="accounts" className="mt-4 max-w-xl">
+          <UsersCard />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
-

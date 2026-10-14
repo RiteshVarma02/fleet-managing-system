@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect } from "react";
-import { Bot, LogOut, Map as MapIcon, OctagonX, ShieldCheck, UserCog } from "lucide-react";
+import { Bot, Code2, LogOut, OctagonX, ShieldCheck, UserCog } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -16,7 +16,7 @@ export const Route = createFileRoute("/_app")({
 });
 
 function AppLayout() {
-  const { ready, isAuthenticated, isAdmin, user, logout } = useAuth();
+  const { ready, isAuthenticated, isAdmin, isDeveloper, user, logout } = useAuth();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
@@ -38,21 +38,16 @@ function AppLayout() {
 
   if (!ready || !isAuthenticated) return <div className="min-h-screen bg-background" />;
 
-  const navItems = isAdmin
-    ? [
-        { to: "/fleet", label: "Fleet monitor", icon: ShieldCheck },
-        { to: "/console", label: "Control console", icon: UserCog },
-        { to: "/maps", label: "Maps", icon: MapIcon },
-      ]
-    : [
-        { to: "/console", label: "Control console", icon: UserCog },
-        { to: "/maps", label: "Maps", icon: MapIcon },
-      ];
+  const navItems = [
+    { to: "/console", label: "Operate", icon: UserCog },
+    ...(isAdmin ? [{ to: "/fleet", label: "Admin", icon: ShieldCheck }] : []),
+    ...(isDeveloper ? [{ to: "/dev", label: "Developer", icon: Code2 }] : []),
+  ];
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
       <header className="sticky top-0 z-20 flex h-14 items-center gap-4 border-b border-border bg-card px-4">
-        <Link to={isAdmin ? "/fleet" : "/console"} className="flex items-center gap-2 font-semibold">
+        <Link to="/console" className="flex items-center gap-2 font-semibold">
           <span className="flex size-8 items-center justify-center rounded-md bg-primary/15 text-primary">
             <Bot className="size-4" aria-hidden />
           </span>
@@ -77,7 +72,10 @@ function AppLayout() {
         <div className="ml-auto flex items-center gap-3">
           <span className="hidden items-center gap-2 text-xs text-muted-foreground md:flex">
             <span
-              className={cn("size-2 rounded-full", system?.ros_available ? "bg-chart-2" : "bg-muted-foreground")}
+              className={cn(
+                "size-2 rounded-full",
+                system?.ros_available ? "bg-chart-2" : "bg-muted-foreground",
+              )}
               aria-hidden
             />
             ROS {system?.ros_available ? "online" : "offline"}

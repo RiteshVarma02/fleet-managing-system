@@ -1,6 +1,6 @@
 // Mirrors backend/app/schemas/* — keep in sync with the FastAPI models.
 
-export type Role = "admin" | "operator";
+export type Role = "developer" | "admin" | "operator";
 
 export interface User {
   id: string | null;
@@ -29,72 +29,69 @@ export interface Velocity {
   angular: number;
 }
 
-export type RobotStatus = "online" | "offline" | "error" | "busy" | string;
-
-/** Logical robot capabilities declared by `app/ros/topics_registry.py`. */
-export type Capability =
-  | "movement"
-  | "navigation"
-  | "telemetry"
-  | "emergency"
-  | "docking"
-  | "fork_control"
-  | "arm_control";
+/** Derived by the server (`backend/app/services/robot_status.py`). */
+export type RobotStatus =
+  | "offline"
+  | "idle"
+  | "moving"
+  | "paused"
+  | "awaiting_approval"
+  | "stop_active"
+  | "e_stopped"
+  | "error";
 
 export interface Robot {
   id: string;
   name: string;
   type: string;
-  status: RobotStatus;
+  status: RobotStatus | string;
   battery: number;
   position: Position;
-  capabilities: Capability[] | string[];
+  capabilities: string[];
   mac_address: string | null;
   hostname: string | null;
   ip_address: string | null;
-  ros_domain_id: number | null;
   approved: boolean;
   connected: boolean;
-  map_available: boolean;
-  map_share_enabled: boolean;
+  /** Physical E-stop button is pressed on the robot. */
+  stop_active: boolean;
+  /** Software E-stop from the dashboard. */
+  emergency_active: boolean;
   active_task_id: string | null;
   last_seen_at: string | null;
-}
-
-export interface NavStatus {
-  state?: string;
-  distance_remaining?: number;
-  goal?: Position | null;
-  message?: string | null;
 }
 
 export interface RobotTelemetry {
   robot_id?: string;
   connected: boolean;
+  status?: string;
   position: Position;
   velocity: Velocity;
-  battery: number;
-  nav: NavStatus | null;
+  battery: number | null;
+  nav: { status?: string; message?: string | null } | null;
   dock_state?: string | null;
   fork_height?: number | null;
   arm_state?: string | null;
   emergency_active?: boolean;
+  stop_active?: boolean;
+  safety_hold?: string | null;
   capabilities?: string[];
+  topics?: Record<string, string>;
 }
 
 /** One entry of a `/telemetry/ws` frame. */
 export interface TelemetrySample {
   robot_id: string;
-  status?: RobotStatus;
+  status?: string;
   position?: Position;
   velocity?: Velocity;
   battery?: number;
-  nav?: NavStatus | null;
+  nav?: RobotTelemetry["nav"];
   dock_state?: string | null;
   fork_height?: number | null;
   arm_state?: string | null;
   emergency_active?: boolean;
-  /** Server-side publish time (ISO 8601), added by the telemetry bus. */
+  stop_active?: boolean;
   at?: string;
 }
 
@@ -107,19 +104,8 @@ export interface RobotType {
   name: string;
   description: string;
   capabilities: string[];
-}
-
-export interface BridgeStatus {
-  robot_id: string;
-  running: boolean;
-  restarts: number;
-  config_path: string | null;
-}
-
-export interface DomainInfo {
-  next_domain_id: number;
-  server_domain_id: number;
-  used: { domain: number; robot_id: string }[];
+  extends?: string | null;
+  topics?: Record<string, { name: string; type: string }>;
 }
 
 export interface PendingRegistration {
@@ -131,27 +117,33 @@ export interface PendingRegistration {
   last_seen_at: string | null;
 }
 
-export interface LocationPoint {
-  id: string;
+/** A waypoint of the active graph. x/y are null when the graph has none. */
+export interface Waypoint {
+  id: number;
   name: string;
-  x: number;
-  y: number;
-  theta: number;
-  map_name: string | null;
-  created_at: string | null;
+  x: number | null;
+  y: number | null;
 }
 
+export interface WaypointList {
+  version: number | null;
+  waypoints: Waypoint[];
+}
+
+export type MissionMode = "continuous" | "step";
+
 export type TaskStatus =
-  "pending" | "running" | "paused" | "completed" | "failed" | "cancelled" | string;
+  "pending" | "running" | "paused" | "awaiting_approval" | "completed" | "failed" | "cancelled";
 
 export interface Task {
   id: string;
   type: string;
-  status: TaskStatus;
+  status: TaskStatus | string;
   robot_id: string | null;
-  from_location_id: string | null;
-  to_location_id: string | null;
+  stops: string[];
+  mode: MissionMode | string;
   repeats: number;
+  completed_repeats: number;
   message: string | null;
   created_at: string | null;
   started_at: string | null;
@@ -163,25 +155,15 @@ export interface TaskProgress {
   task_id: string;
   robot_id: string;
   leg: string | null;
+  stops: string[];
+  mode: MissionMode | string;
+  cycle: number;
+  stop_index: number;
+  next_stop: string | null;
   completed_repeats: number;
   repeats: number;
   status: string;
   message?: string | null;
-}
-
-/** Queued unassigned work; `scheduled_at` defers scheduler pickup. */
-export interface TaskRequest {
-  id: string;
-  task_type: string;
-  status: string;
-  from_location_id: string | null;
-  to_location_id: string | null;
-  robot_type: string | null;
-  repeats: number;
-  scheduled_at: string | null;
-  assigned_task_id: string | null;
-  assigned_robot_id: string | null;
-  created_at: string | null;
 }
 
 export interface MapMetadata {
@@ -192,36 +174,56 @@ export interface MapMetadata {
   origin_y: number;
 }
 
-export interface MapImage {
-  status: string;
+/** `GET /fleet-files/map/preview` — the single fleet map. */
+export interface MapPreview {
+  version: number | null;
   image: string;
-  metadata: MapMetadata;
-}
-
-/** `POST /maps/save-from-robot` — the saved map set plus its normalized name. */
-export interface SavedMap extends MapImage {
-  name: string;
-}
-
-/** A robot's own map from `GET /robots/{id}/map`; `available` is false until the grid is seen. */
-export interface RobotMap {
-  available: boolean;
-  image: string | null;
   metadata: MapMetadata | null;
 }
 
-export interface MapSummary {
-  name: string;
-  modified_at: string;
-  has_yaml: boolean;
-  has_image: boolean;
+export type FileKind = "graph" | "map";
+
+export interface FileVersion {
+  version: number;
   active: boolean;
+  note: string;
+  created_by: string;
+  created_at: string | null;
+  meta: Record<string, unknown>;
+  files: { role: string; name: string; sha256: string; size: number }[];
 }
 
-/** The fleet's active map pointer (name + active flag) as surfaced by `/maps`. */
-export interface MapDetail {
-  name: string;
-  active: boolean;
+export type FleetFilesOverview = Record<
+  FileKind,
+  { active: FileVersion | null; versions: FileVersion[] }
+>;
+
+export type SyncState = "in_sync" | "out_of_sync" | "failed" | "never" | "no_file";
+
+export interface RobotFileStatus {
+  robot_id: string;
+  online: boolean;
+  graph: FileSyncEntry;
+  map: FileSyncEntry;
+}
+
+export interface FileSyncEntry {
+  active_version: number | null;
+  robot_version: number | null;
+  sync: SyncState;
+  last_status: string | null;
+  error: string | null;
+}
+
+export interface FleetFilesStatus {
+  active: Record<FileKind, number | null>;
+  robots: RobotFileStatus[];
+}
+
+export interface PushResult {
+  kind: FileKind;
+  version: number;
+  results: { robot_id: string; status: string; error: string | null }[];
 }
 
 export interface SystemInfo {
@@ -232,8 +234,22 @@ export interface SystemInfo {
   ros_domain_id: number;
   connected_robots: string[];
   robot_types: string[];
-  slam_running: boolean;
-  domain_bridge_enabled: boolean;
-  bridges: BridgeStatus[];
+  topics_file: string;
   telemetry_ws_interval_seconds: number;
+  telemetry_stale_after_seconds: number;
+}
+
+export interface TopicsConfig {
+  path: string;
+  default_robot_type: string;
+  fleet: Record<string, { name: string; type: string; qos: string }>;
+  robot_types: Record<
+    string,
+    {
+      description: string;
+      extends: string | null;
+      capabilities: string[];
+      topics: Record<string, { name: string; type: string; qos: string }>;
+    }
+  >;
 }

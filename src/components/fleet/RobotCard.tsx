@@ -1,19 +1,22 @@
 import { Battery, BatteryLow, Wifi, WifiOff } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { statusInfo } from "@/lib/robot-status";
 import { cn } from "@/lib/utils";
 import type { Robot } from "@/lib/api/types";
 
 export function StatusBadge({ status }: { status: string }) {
-  const tone =
-    status === "online"
-      ? "bg-chart-2/15 text-chart-2"
-      : status === "error"
-        ? "bg-destructive/15 text-destructive"
-        : "bg-muted text-muted-foreground";
+  const info = statusInfo(status);
   return (
-    <Badge variant="outline" className={cn("border-transparent uppercase tracking-wide", tone)}>
-      {status}
+    <Badge
+      variant="outline"
+      className={cn(
+        "border-transparent uppercase tracking-wide",
+        info.badge,
+        info.pulse && "animate-pulse",
+      )}
+    >
+      {info.label}
     </Badge>
   );
 }
@@ -22,9 +25,14 @@ export function BatteryPill({ level }: { level: number }) {
   const low = level <= 20;
   const Icon = low ? BatteryLow : Battery;
   return (
-    <span className={cn("inline-flex items-center gap-1 text-sm", low ? "text-destructive" : "text-foreground")}>
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 text-sm",
+        low ? "text-destructive" : "text-foreground",
+      )}
+    >
       <Icon className="size-4" aria-hidden />
-      {level}%
+      {Math.round(level)}%
     </span>
   );
 }
@@ -37,7 +45,7 @@ interface RobotCardProps {
 }
 
 export function RobotCard({ robot, selected, onSelect, actions }: RobotCardProps) {
-  const online = robot.status === "online";
+  const online = robot.status !== "offline";
   return (
     <div
       role={onSelect ? "button" : undefined}
@@ -53,6 +61,7 @@ export function RobotCard({ robot, selected, onSelect, actions }: RobotCardProps
         "rounded-lg border border-border bg-card p-4 transition-colors",
         onSelect && "cursor-pointer hover:border-primary/60",
         selected && "border-primary ring-1 ring-primary/40",
+        (robot.stop_active || robot.emergency_active) && "border-red-600 bg-red-600/10",
       )}
     >
       <div className="flex items-start justify-between gap-3">
@@ -73,7 +82,11 @@ export function RobotCard({ robot, selected, onSelect, actions }: RobotCardProps
         <div>
           <dt className="text-xs uppercase text-muted-foreground">Link</dt>
           <dd className="inline-flex items-center gap-1">
-            {online ? <Wifi className="size-4 text-chart-2" /> : <WifiOff className="size-4 text-muted-foreground" />}
+            {online ? (
+              <Wifi className="size-4 text-chart-2" />
+            ) : (
+              <WifiOff className="size-4 text-muted-foreground" />
+            )}
             {robot.ip_address ?? "—"}
           </dd>
         </div>
@@ -85,7 +98,9 @@ export function RobotCard({ robot, selected, onSelect, actions }: RobotCardProps
         </div>
         <div>
           <dt className="text-xs uppercase text-muted-foreground">Heading</dt>
-          <dd className="font-mono text-xs">{((robot.position.theta * 180) / Math.PI).toFixed(1)}°</dd>
+          <dd className="font-mono text-xs">
+            {((robot.position.theta * 180) / Math.PI).toFixed(1)}°
+          </dd>
         </div>
       </dl>
 

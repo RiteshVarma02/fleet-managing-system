@@ -24,9 +24,7 @@ const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 15_000;
 
 function socketUrl(): string {
-  const base = API_BASE.startsWith("http")
-    ? API_BASE
-    : `${window.location.origin}${API_BASE}`;
+  const base = API_BASE.startsWith("http") ? API_BASE : `${window.location.origin}${API_BASE}`;
   const url = new URL(`${base.replace(/\/$/, "")}/telemetry/ws`);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   const token = getAccessToken();
@@ -48,29 +46,31 @@ function applySamples(queryClient: QueryClient, samples: TelemetrySample[]) {
         status: sample.status ?? robot.status,
         battery: sample.battery ?? robot.battery,
         position: sample.position ?? robot.position,
+        stop_active: sample.stop_active ?? robot.stop_active,
+        emergency_active: sample.emergency_active ?? robot.emergency_active,
+        connected: (sample.status ?? robot.status) !== "offline",
       };
     }),
   );
 
   for (const sample of samples) {
-    queryClient.setQueryData<RobotTelemetry>(
-      queryKeys.robotStatus(sample.robot_id),
-      (previous) => {
-        if (!previous) return previous;
-        return {
-          ...previous,
-          connected: true,
-          position: sample.position ?? previous.position,
-          velocity: sample.velocity ?? previous.velocity,
-          battery: sample.battery ?? previous.battery,
-          nav: sample.nav ?? previous.nav,
-          dock_state: sample.dock_state ?? previous.dock_state,
-          fork_height: sample.fork_height ?? previous.fork_height,
-          arm_state: sample.arm_state ?? previous.arm_state,
-          emergency_active: sample.emergency_active ?? previous.emergency_active,
-        };
-      },
-    );
+    queryClient.setQueryData<RobotTelemetry>(queryKeys.robotStatus(sample.robot_id), (previous) => {
+      if (!previous) return previous;
+      return {
+        ...previous,
+        connected: true,
+        position: sample.position ?? previous.position,
+        velocity: sample.velocity ?? previous.velocity,
+        battery: sample.battery ?? previous.battery,
+        nav: sample.nav ?? previous.nav,
+        dock_state: sample.dock_state ?? previous.dock_state,
+        fork_height: sample.fork_height ?? previous.fork_height,
+        arm_state: sample.arm_state ?? previous.arm_state,
+        emergency_active: sample.emergency_active ?? previous.emergency_active,
+        stop_active: sample.stop_active ?? previous.stop_active,
+        status: sample.status ?? previous.status,
+      };
+    });
   }
 }
 

@@ -1,8 +1,16 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 
 import { api, AUTH_STORAGE_KEY, setAccessToken, setUnauthorizedHandler } from "./api/client";
 import { resetTelemetrySocket } from "./api/telemetry";
-import type { TokenResponse, User } from "./api/types";
+import type { Role, TokenResponse, User } from "./api/types";
 
 interface StoredSession {
   token: string;
@@ -13,9 +21,12 @@ interface StoredSession {
 interface AuthState {
   user: User | null;
   isAuthenticated: boolean;
+  /** Admin or developer. */
   isAdmin: boolean;
+  isDeveloper: boolean;
   ready: boolean;
-  login: (username: string, password: string) => Promise<User>;
+  /** `portal` is the login page used; the server refuses lower roles. */
+  login: (username: string, password: string, portal?: Role) => Promise<User>;
   logout: () => void;
 }
 
@@ -60,8 +71,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => setUnauthorizedHandler(null);
   }, [logout]);
 
-  const login = useCallback(async (username: string, password: string) => {
-    const result = await api.raw<TokenResponse>("/auth/login", { username, password });
+  const login = useCallback(async (username: string, password: string, portal?: Role) => {
+    const result = await api.raw<TokenResponse>("/auth/login", { username, password, portal });
     const next: StoredSession = {
       token: result.access_token,
       user: result.user,
@@ -77,7 +88,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     () => ({
       user: session?.user ?? null,
       isAuthenticated: Boolean(session),
-      isAdmin: session?.user.role === "admin",
+      isAdmin: session?.user.role === "admin" || session?.user.role === "developer",
+      isDeveloper: session?.user.role === "developer",
       ready,
       login,
       logout,
@@ -94,6 +106,9 @@ export function useAuth(): AuthState {
   return context;
 }
 
+/** Where each role lands after signing in. */
 export function homeRouteFor(user: User | null) {
-  return user?.role === "admin" ? "/fleet" : "/console";
+  if (user?.role === "developer") return "/dev";
+  if (user?.role === "admin") return "/fleet";
+  return "/console";
 }

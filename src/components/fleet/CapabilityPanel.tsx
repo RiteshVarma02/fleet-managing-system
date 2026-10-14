@@ -32,7 +32,6 @@ export function CapabilityPanel({
   const has = (name: string) => capabilities.includes(name);
   const blocked = disabled || !robotId;
 
-  const [goal, setGoal] = useState({ x: "0", y: "0", theta: "0" });
   const [forkHeight, setForkHeight] = useState("0.2");
 
   const command = useMutation({
@@ -42,116 +41,17 @@ export function CapabilityPanel({
     onError: (error: Error) => toast.error(error.message),
   });
 
-  const send = (path: string, body: Record<string, unknown> = {}) =>
-    command.mutate({ path, body });
+  const send = (path: string, body: Record<string, unknown> = {}) => command.mutate({ path, body });
 
-  if (!has("navigation") && !has("docking") && !has("fork_control") && !has("arm_control")) {
+  if (!has("docking") && !has("fork_control") && !has("arm_control")) {
     return null;
   }
 
   return (
     <div className="space-y-4 rounded-lg border border-border bg-card p-4">
       <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-        Capabilities
+        Robot extras
       </h2>
-
-      {has("navigation") && (
-        <section className="space-y-2">
-          <p className="text-xs uppercase tracking-wide text-muted-foreground">Navigation goal</p>
-          <div className="grid grid-cols-3 gap-2">
-            {(["x", "y", "theta"] as const).map((axis) => (
-              <div key={axis}>
-                <Label htmlFor={`goal-${axis}`} className="text-[11px] text-muted-foreground">
-                  {axis}
-                </Label>
-                <Input
-                  id={`goal-${axis}`}
-                  inputMode="decimal"
-                  className="h-8"
-                  value={goal[axis]}
-                  onChange={(event) =>
-                    setGoal((prev) => ({ ...prev, [axis]: event.target.value }))
-                  }
-                />
-              </div>
-            ))}
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Button
-              size="sm"
-              className="flex-1"
-              disabled={blocked}
-              onClick={() =>
-                send("/robots/goal", {
-                  x: Number(goal.x) || 0,
-                  y: Number(goal.y) || 0,
-                  theta: Number(goal.theta) || 0,
-                })
-              }
-            >
-              Send goal
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={blocked}
-              onClick={() => send("/robots/goal/pause")}
-            >
-              Pause
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={blocked}
-              onClick={() => send("/robots/goal/resume")}
-            >
-              Resume
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={blocked}
-              onClick={() => send("/robots/goal/cancel")}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              variant="secondary"
-              disabled={blocked}
-              onClick={() =>
-                send("/robots/initial-pose", {
-                  x: Number(goal.x) || 0,
-                  y: Number(goal.y) || 0,
-                  theta: Number(goal.theta) || 0,
-                })
-              }
-            >
-              Set pose
-            </Button>
-          </div>
-          {telemetry?.nav?.state && (
-            <p className="text-xs text-muted-foreground">
-              Nav:{" "}
-              <span
-                className={
-                  telemetry.nav.state === "paused"
-                    ? "text-amber-500 font-medium"
-                    : telemetry.nav.state === "active" || telemetry.nav.state === "succeeded"
-                      ? "text-chart-2"
-                      : telemetry.nav.state === "failed" || telemetry.nav.state === "aborted"
-                        ? "text-destructive"
-                        : "text-foreground"
-                }
-              >
-                {telemetry.nav.state}
-              </span>
-              {typeof telemetry.nav.distance_remaining === "number" &&
-                ` · ${telemetry.nav.distance_remaining.toFixed(2)} m left`}
-            </p>
-          )}
-        </section>
-      )}
 
       {has("docking") && (
         <section className="space-y-2">

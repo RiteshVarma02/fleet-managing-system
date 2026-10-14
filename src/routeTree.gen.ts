@@ -13,8 +13,8 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as AppConsoleRouteImport } from './routes/_app.console'
+import { Route as AppDevRouteImport } from './routes/_app.dev'
 import { Route as AppFleetRouteImport } from './routes/_app.fleet'
-import { Route as AppMapsRouteImport } from './routes/_app.maps'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -35,14 +35,14 @@ const AppConsoleRoute = AppConsoleRouteImport.update({
   path: '/console',
   getParentRoute: () => AppRoute,
 } as any)
+const AppDevRoute = AppDevRouteImport.update({
+  id: '/dev',
+  path: '/dev',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppFleetRoute = AppFleetRouteImport.update({
   id: '/fleet',
   path: '/fleet',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppMapsRoute = AppMapsRouteImport.update({
-  id: '/maps',
-  path: '/maps',
   getParentRoute: () => AppRoute,
 } as any)
 
@@ -50,15 +50,15 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/console': typeof AppConsoleRoute
+  '/dev': typeof AppDevRoute
   '/fleet': typeof AppFleetRoute
-  '/maps': typeof AppMapsRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/console': typeof AppConsoleRoute
+  '/dev': typeof AppDevRoute
   '/fleet': typeof AppFleetRoute
-  '/maps': typeof AppMapsRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -66,22 +66,22 @@ export interface FileRoutesById {
   '/_app': typeof AppRouteWithChildren
   '/login': typeof LoginRoute
   '/_app/console': typeof AppConsoleRoute
+  '/_app/dev': typeof AppDevRoute
   '/_app/fleet': typeof AppFleetRoute
-  '/_app/maps': typeof AppMapsRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/login' | '/console' | '/fleet' | '/maps'
+  fullPaths: '/' | '/login' | '/console' | '/dev' | '/fleet'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/login' | '/console' | '/fleet' | '/maps'
+  to: '/' | '/login' | '/console' | '/dev' | '/fleet'
   id:
     | '__root__'
     | '/'
     | '/_app'
     | '/login'
     | '/_app/console'
+    | '/_app/dev'
     | '/_app/fleet'
-    | '/_app/maps'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -120,6 +120,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppConsoleRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/dev': {
+      id: '/_app/dev'
+      path: '/dev'
+      fullPath: '/dev'
+      preLoaderRoute: typeof AppDevRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/fleet': {
       id: '/_app/fleet'
       path: '/fleet'
@@ -127,26 +134,19 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppFleetRouteImport
       parentRoute: typeof AppRoute
     }
-    '/_app/maps': {
-      id: '/_app/maps'
-      path: '/maps'
-      fullPath: '/maps'
-      preLoaderRoute: typeof AppMapsRouteImport
-      parentRoute: typeof AppRoute
-    }
   }
 }
 
 interface AppRouteChildren {
   AppConsoleRoute: typeof AppConsoleRoute
+  AppDevRoute: typeof AppDevRoute
   AppFleetRoute: typeof AppFleetRoute
-  AppMapsRoute: typeof AppMapsRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
   AppConsoleRoute: AppConsoleRoute,
+  AppDevRoute: AppDevRoute,
   AppFleetRoute: AppFleetRoute,
-  AppMapsRoute: AppMapsRoute,
 }
 
 const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
