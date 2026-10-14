@@ -34,6 +34,7 @@ def _resolve(router, method: str, path: str):
         ("POST", "/tasks/missions", "start_mission_endpoint"),
         ("POST", "/tasks/waypoint", "send_waypoint_endpoint"),
         ("GET", "/tasks/robot/robot_1/progress", "robot_progress"),
+        ("POST", "/tasks/robot/robot_1/pause", "robot_control"),
         ("POST", "/tasks/requests", "create_request"),
         ("GET", "/tasks/requests/unassigned", "unassigned_requests"),
     ],
@@ -46,8 +47,6 @@ def test_static_task_routes_are_not_shadowed_by_dynamic(method, path, expected):
     "method,path,expected",
     [
         ("POST", "/tasks/abc123/start", "start_task"),
-        ("POST", "/tasks/abc123/cancel", "cancel_task"),
-        ("POST", "/tasks/abc123/approve", "approve_task"),
         ("GET", "/tasks/abc123/progress", "task_progress"),
         ("GET", "/tasks/abc123/history", "task_history"),
         ("GET", "/tasks/abc123", "get_task"),

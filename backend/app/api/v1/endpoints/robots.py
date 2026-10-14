@@ -210,9 +210,19 @@ async def delete_robot(
 # --------------------------------------------------------------------------
 # Teleoperation and emergency stop
 # --------------------------------------------------------------------------
+def _refuse_during_estop(controller) -> None:
+    """E-stop is absolute: teleop and every other motion command are refused."""
+    hold = controller.safety_hold() if hasattr(controller, "safety_hold") else None
+    if hold:
+        raise ConflictError(f"Robot is stopped: {hold}", code="safety_hold")
+
+
 @router.post("/move", response_model=StatusResponse)
 def move(body: MoveCommand, _: Principal = Depends(require_operator)):
-    robot_service.require_controller(body.robot_id, "movement").move(body.linear, body.angular)
+    controller = robot_service.require_controller(body.robot_id, "movement")
+    _refuse_during_estop(controller)
+    if not controller.move(body.linear, body.angular):
+        raise ConflictError("Robot cannot move right now", code="safety_hold")
     return StatusResponse(message="Command sent")
 
 
@@ -283,6 +293,7 @@ async def _engage_emergency(db, robot_id: str) -> None:
 @router.post("/dock", response_model=StatusResponse)
 def dock(body: DockCommand, _: Principal = Depends(require_operator)):
     controller = robot_service.require_controller(body.robot_id, "docking")
+    _refuse_during_estop(controller)
     ok = controller.dock() if body.command == "dock" else controller.undock()
     if not ok:
         raise ConflictError("Dock command could not be published")
@@ -292,6 +303,7 @@ def dock(body: DockCommand, _: Principal = Depends(require_operator)):
 @router.post("/fork", response_model=DataResponse[dict])
 def fork(body: ForkCommand, _: Principal = Depends(require_operator)):
     controller = robot_service.require_controller(body.robot_id, "fork_control")
+    _refuse_during_estop(controller)
     commanded = controller.set_fork_height(body.height)
     return DataResponse(data={"commanded_height": commanded})
 
@@ -299,6 +311,7 @@ def fork(body: ForkCommand, _: Principal = Depends(require_operator)):
 @router.post("/gripper", response_model=StatusResponse)
 def gripper(body: GripperCommand, _: Principal = Depends(require_operator)):
     controller = robot_service.require_controller(body.robot_id, "arm_control")
+    _refuse_during_estop(controller)
     if not controller.send_gripper_command(body.command):
         raise ConflictError("Gripper command could not be published")
     return StatusResponse(message=f"Gripper {body.command} sent")

@@ -77,10 +77,7 @@ def test_waypoints_readable_by_any_authenticated_user():
         ("POST", "/tasks"),
         ("POST", "/tasks/missions"),
         ("POST", "/tasks/waypoint"),
-        ("POST", "/tasks/{task_id}/approve"),
-        ("POST", "/tasks/{task_id}/pause"),
-        ("POST", "/tasks/{task_id}/resume"),
-        ("POST", "/tasks/{task_id}/cancel"),
+        ("POST", "/tasks/robot/{robot_id}/{action}"),
     ],
 )
 def test_mission_commands_require_operator(method, path):

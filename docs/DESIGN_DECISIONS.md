@@ -92,3 +92,12 @@ It exposes the internal ROS layout and changes how every robot is addressed; it 
 
 ## D29. No built-in default passwords in production
 Production needs `BOOTSTRAP_DEVELOPER_PASSWORD`; admin and operator are seeded only when their password is provided. Development falls back to throwaway defaults with a warning.
+
+## D30. E-stop is absolute and enforced inside the controller
+`move()` replaces any non-zero velocity with a stop while a physical or software E-stop is active, whoever asks (teleop, scripts). The REST endpoints (`/move`, `/dock`, `/fork`, `/gripper`) also answer 409 `safety_hold` so the operator sees why. Plain `stop` is always allowed. Reason: the guarantee must not depend on the UI behaving.
+
+## D31. Teleop and E-stop are separate controls
+Teleop = `/robots/move` and `/robots/stop` (a velocity zero). E-stop = `/robots/emergency-stop` and `emergency-release` (the safety hold that also pauses the mission). Pressing "stop" in teleop never engages the E-stop and vice versa; only the E-stop blocks teleop.
+
+## D32. One set of mission controls, addressed by robot
+`POST /tasks/robot/{robot_id}/{pause|resume|cancel}`. `resume` also means "go" for a mission waiting for approval (move on click), so the operator has one Continue button for both cases. The old per-task pause/resume/cancel/approve routes were removed.

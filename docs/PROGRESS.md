@@ -13,6 +13,7 @@ Updated after every working session. Newest status on top.
 - V1.1: natural-language waypoint commands.
 
 ## Done
+- Safety/controls pass: E-stop beats teleop in the controller, single per-robot control route (pause/resume/cancel), teleop kept separate from E-stop. 128 backend tests.
 - Phase 4 (backend): roles developer > admin > operator (`viewer` retired), `require_developer`, optional `portal` on login, admins can only manage operators, last-developer lockout guard, topics endpoints developer-only, seeding of the three accounts (`BOOTSTRAP_DEVELOPER_PASSWORD` required in production). 126 backend tests.
 - Phase 3 (backend): missions = ordered `stops[]` x `repeats`, `mode` continuous | step (move on click), `awaiting_approval` state, `POST /tasks/{id}/approve`, `POST /tasks/missions`, `POST /tasks/waypoint` (text box), `GET /tasks/robot/{id}/progress`; pick/drop and `locations` removed; waypoint names validated against the active graph. 110 backend tests.
 - Phase 2 (backend): versioned fleet graph + map in Mongo/GridFS, `/fleet-files` upload/download/rollback/push/status, `/waypoints`, `fleet_files` ROS capability (publish + ack), legacy `/maps` module and `locations`-independent map removed, Dockerfile no longer installs Nav2/SLAM. 88 backend tests.

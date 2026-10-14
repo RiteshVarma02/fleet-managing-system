@@ -12,13 +12,13 @@ declaration order).
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, Query
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.api.deps import Principal, get_current_user, get_db, require_operator
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import ConflictError, NotFoundError
 from app.db.documents import TaskStatus
 from app.db.repositories import pending_requests_repo, tasks_repo
 from app.schemas.common import DataResponse, StatusResponse
@@ -114,6 +114,33 @@ async def send_waypoint_endpoint(
     return DataResponse(
         data={"task": TaskOut.from_document(result["task"]), "progress": result["progress"]}
     )
+
+
+@router.post("/robot/{robot_id}/{action}", response_model=DataResponse[Optional[dict]])
+async def robot_control(
+    robot_id: str,
+    action: Literal["pause", "resume", "cancel"],
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    _: Principal = Depends(require_operator),
+):
+    """The ONE set of mission controls, addressed by robot.
+
+    * pause   halt the robot mid-leg, keep the mission
+    * resume  continue: after a pause or E-stop, OR "go" for a mission that is
+              waiting for approval (move-on-click). Refused while an E-stop is on.
+    * cancel  abort the mission
+    """
+    task_id = task_engine.running_task_id(robot_id)
+    if task_id is None:
+        raise ConflictError(f"{robot_id} has no active mission", code="task_not_running")
+    if action == "cancel":
+        await task_engine.cancel_task(db, task_id)
+        return DataResponse(data=None)
+    if action == "pause":
+        return DataResponse(data=await task_engine.pause_task(db, task_id))
+    if (task_engine.progress(task_id) or {}).get("status") == TaskStatus.awaiting_approval.value:
+        return DataResponse(data=await task_engine.approve_task(db, task_id))
+    return DataResponse(data=await task_engine.resume_task(db, task_id))
 
 
 @router.get("/robot/{robot_id}/progress", response_model=DataResponse[Optional[dict]])
@@ -217,49 +244,6 @@ async def start_task(
 ):
     task = await task_engine.start_task(db, task_id)
     return DataResponse(data=_with_progress(task))
-
-
-@router.post("/{task_id}/cancel", response_model=StatusResponse)
-async def cancel_task(
-    task_id: str,
-    db: AsyncIOMotorDatabase = Depends(get_db),
-    _: Principal = Depends(require_operator),
-):
-    await task_engine.cancel_task(db, task_id)
-    return StatusResponse(message=f"Task {task_id} cancelled")
-
-
-@router.post("/{task_id}/pause", response_model=DataResponse[Optional[dict]])
-async def pause_task(
-    task_id: str,
-    db: AsyncIOMotorDatabase = Depends(get_db),
-    _: Principal = Depends(require_operator),
-):
-    """Halt the robot mid-leg (empty route); resume re-sends the same waypoint."""
-    progress = await task_engine.pause_task(db, task_id)
-    return DataResponse(data=progress)
-
-
-@router.post("/{task_id}/resume", response_model=DataResponse[Optional[dict]])
-async def resume_task(
-    task_id: str,
-    db: AsyncIOMotorDatabase = Depends(get_db),
-    _: Principal = Depends(require_operator),
-):
-    """Re-issue the paused goal and continue the remaining legs."""
-    progress = await task_engine.resume_task(db, task_id)
-    return DataResponse(data=progress)
-
-
-@router.post("/{task_id}/approve", response_model=DataResponse[Optional[dict]])
-async def approve_task(
-    task_id: str,
-    db: AsyncIOMotorDatabase = Depends(get_db),
-    _: Principal = Depends(require_operator),
-):
-    """Move on click: let a waiting mission go to its next stop."""
-    progress = await task_engine.approve_task(db, task_id)
-    return DataResponse(data=progress)
 
 
 @router.get("/{task_id}/progress", response_model=DataResponse[Optional[dict]])

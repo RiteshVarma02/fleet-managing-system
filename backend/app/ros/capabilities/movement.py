@@ -22,15 +22,27 @@ class MovementCapability:
         with self._state_lock:
             self.current_velocity = velocity
 
-    def move(self, linear: float, angular: float) -> None:
+    def move(self, linear: float, angular: float) -> bool:
+        """Publish a velocity. False when refused.
+
+        An active E-stop (physical or software) always wins: any non-zero
+        command is replaced by a stop, no matter who asked (teleop, dock...).
+        """
         if self._cmd_vel_pub is None:
-            return
+            return False
+        hold = self.safety_hold() if hasattr(self, "safety_hold") else None
+        if hold and (linear or angular):
+            linear = angular = 0.0
+            refused = True
+        else:
+            refused = False
         msg = self.msg("cmd_vel")
         msg.linear.x = float(linear)
         msg.angular.z = float(angular)
         self._cmd_vel_pub.publish(msg)
         with self._state_lock:
             self.current_velocity = {"linear": float(linear), "angular": float(angular)}
+        return not refused
 
     def stop(self) -> None:
         self.move(0.0, 0.0)
