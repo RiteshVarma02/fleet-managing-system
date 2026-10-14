@@ -73,3 +73,15 @@ async def touch_login(db, user_id: str) -> None:
 
 async def count(db) -> int:
     return await _col(db).count_documents({})
+
+
+async def count_active_with_role(db, role: Role) -> int:
+    return await _col(db).count_documents({"role": role.value, "active": {"$ne": False}})
+
+
+async def deactivate_role(db, role_value: str) -> int:
+    """Disable every account holding a retired role. Returns how many changed."""
+    result = await _col(db).update_many(
+        {"role": role_value, "active": {"$ne": False}}, {"$set": {"active": False}}
+    )
+    return result.modified_count

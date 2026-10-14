@@ -74,3 +74,21 @@ Running/paused/awaiting missions found at startup are reset to `pending`. The la
 
 ## D23. `locations` collection and pick/drop are deleted
 Waypoints now come from the graph JSON (single source of truth shared with route_manager). Keeping a second, hand-edited location list would drift from the real graph.
+
+## D24. Three roles by rank; higher roles include lower ones
+developer(3) > admin(2) > operator(1); unknown or retired roles rank 0 and get nothing. One integer comparison backs `require_operator / require_admin / require_developer`, so a new role is one table entry. The developer (the project owner) therefore has every permission by construction.
+
+## D25. "Separate logins" = one account store, per-role login pages, role enforced by the server
+The login page sends `portal` (operator | admin | developer); the server refuses if the account's rank is lower. A higher role may use a lower page and always receives its true role. The UI then shows the panel for the real role. Reason: separate passwords per role without three user tables; the server, not the browser, decides access.
+
+## D26. Admins cannot create or edit admin/developer accounts
+Otherwise any admin could mint a developer and escape the hierarchy. Also: nobody can change their own role or disable themselves, and the last active developer cannot be demoted or disabled (no lock-out).
+
+## D27. Retired `viewer` accounts are disabled, not promoted
+Mapping viewer -> operator would silently grant command rights. They are switched off at startup with a warning; an admin re-creates them with an explicit role.
+
+## D28. Topic config is developer-only (view and reload)
+It exposes the internal ROS layout and changes how every robot is addressed; it is an engineering tool, not an operations one.
+
+## D29. No built-in default passwords in production
+Production needs `BOOTSTRAP_DEVELOPER_PASSWORD`; admin and operator are seeded only when their password is provided. Development falls back to throwaway defaults with a warning.

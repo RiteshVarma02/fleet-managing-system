@@ -6,9 +6,10 @@ from fastapi import APIRouter, Depends
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.api.deps import Principal, get_current_user, get_db
-from app.core.exceptions import AuthError
+from app.core.exceptions import AuthError, ForbiddenError
 from app.core.security import create_access_token, verify_password
 from app.db.repositories import users_repo as user_repo
+from app.db.documents import role_rank
 from app.schemas.auth import LoginRequest, TokenResponse, UserOut
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -24,6 +25,12 @@ async def login(
     valid = user is not None and verify_password(payload.password, str(user.get("password_hash") or ""))
     if not user or not valid:
         raise AuthError("Invalid username or password")
+    if user.get("active") is False:
+        raise AuthError("This account is disabled")
+    if role_rank(str(user.get("role"))) == 0:
+        raise ForbiddenError("This account has no role; ask an administrator")
+    if payload.portal is not None and role_rank(str(user["role"])) < role_rank(payload.portal.value):
+        raise ForbiddenError(f"This account cannot sign in to the {payload.portal.value} panel")
 
     token, expires_in = create_access_token(
         str(user["username"]),

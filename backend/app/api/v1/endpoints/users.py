@@ -8,13 +8,32 @@ from fastapi import APIRouter, Depends
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.api.deps import Principal, get_current_user, get_db, require_admin
-from app.core.exceptions import AuthError, ConflictError, NotFoundError, ValidationError
+from app.core.exceptions import (
+    AuthError,
+    ConflictError,
+    ForbiddenError,
+    NotFoundError,
+    ValidationError,
+)
 from app.core.security import hash_password, verify_password
+from app.db.documents import Role, role_rank
 from app.db.repositories import users_repo
 from app.schemas.auth import PasswordChange, UserCreate, UserOut, UserUpdate
 from app.schemas.common import DataResponse, StatusResponse
 
 router = APIRouter(prefix="/users", tags=["users"])
+
+
+def assert_can_assign(actor: Principal, target_role: str) -> None:
+    """Who may create or edit an account holding `target_role`.
+
+    Developers manage everyone. Admins manage operators only, so an admin can
+    never create or alter an account at or above their own level.
+    """
+    if actor.is_developer:
+        return
+    if role_rank(target_role) >= role_rank(Role.admin.value):
+        raise ForbiddenError("Only a developer can manage admin or developer accounts")
 
 
 def _out(doc: dict) -> UserOut:
@@ -40,8 +59,9 @@ async def list_users(
 async def create_user(
     body: UserCreate,
     db: AsyncIOMotorDatabase = Depends(get_db),
-    _: Principal = Depends(require_admin),
+    actor: Principal = Depends(require_admin),
 ):
+    assert_can_assign(actor, body.role.value)
     created = await users_repo.create(
         db, body.username, hash_password(body.password), body.role
     )
@@ -55,8 +75,20 @@ async def update_user(
     user_id: str,
     body: UserUpdate,
     db: AsyncIOMotorDatabase = Depends(get_db),
-    _: Principal = Depends(require_admin),
+    actor: Principal = Depends(require_admin),
 ):
+    target = await users_repo.get(db, user_id)
+    if target is None:
+        raise NotFoundError(f"User '{user_id}' not found")
+    assert_can_assign(actor, str(target.get("role")))
+    if body.role is not None:
+        assert_can_assign(actor, body.role.value)
+    if target.get("username") == actor.username and (body.role is not None or body.active is not None):
+        raise ValidationError("You cannot change your own role or disable your own account")
+    if target.get("role") == Role.developer.value and (
+        (body.role is not None and body.role is not Role.developer) or body.active is False
+    ) and await users_repo.count_active_with_role(db, Role.developer) <= 1:
+        raise ConflictError("This is the last active developer account", code="last_developer")
     fields: dict = {}
     if body.password:
         fields["password_hash"] = hash_password(body.password)

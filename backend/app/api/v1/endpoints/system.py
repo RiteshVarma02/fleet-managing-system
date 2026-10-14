@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from app.api.deps import Principal, get_current_user, require_admin
+from app.api.deps import Principal, get_current_user, require_developer
 from app.core.config import settings
 from app.core.exceptions import ValidationError
 from app.db.mongo import connect_and_verify
@@ -52,13 +52,13 @@ def system_info(_: Principal = Depends(get_current_user)):
 
 
 @router.get("/system/topics", response_model=DataResponse[dict])
-def topics(_: Principal = Depends(get_current_user)):
+def topics(_: Principal = Depends(require_developer)):
     """The parsed fleet_topics.yaml: every topic name and type, per robot type."""
     return DataResponse(data=topic_registry.describe())
 
 
 @router.post("/system/topics/reload", response_model=DataResponse[dict])
-def reload_topics(_: Principal = Depends(require_admin)):
+def reload_topics(_: Principal = Depends(require_developer)):
     """Re-read fleet_topics.yaml. Robots listed in `reconnect_required` keep
     their old topics until they are disconnected and connected again."""
     try:

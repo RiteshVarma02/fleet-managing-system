@@ -11,7 +11,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.core.exceptions import AuthError, ForbiddenError
 from app.core.security import decode_access_token
-from app.db.documents import Role
+from app.db.documents import Role, role_rank
 from app.db.mongo import get_database
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -29,12 +29,22 @@ class Principal:
     user_id: Optional[str] = None
 
     @property
+    def rank(self) -> int:
+        return role_rank(self.role)
+
+    @property
+    def is_developer(self) -> bool:
+        return self.rank >= role_rank(Role.developer.value)
+
+    @property
     def is_admin(self) -> bool:
-        return self.role == Role.admin.value
+        """Admins and developers."""
+        return self.rank >= role_rank(Role.admin.value)
 
     @property
     def can_command(self) -> bool:
-        return self.role in {Role.admin.value, Role.operator.value}
+        """Operators, admins and developers. Unknown roles get nothing."""
+        return self.rank >= role_rank(Role.operator.value)
 
 
 def _principal_from_token(token: str) -> Principal:
@@ -57,6 +67,12 @@ def get_current_user(
     return _principal_from_token(credentials.credentials)
 
 
+def require_developer(user: Principal = Depends(get_current_user)) -> Principal:
+    if not user.is_developer:
+        raise ForbiddenError("Developer privileges required")
+    return user
+
+
 def require_admin(user: Principal = Depends(get_current_user)) -> Principal:
     if not user.is_admin:
         raise ForbiddenError("Administrator privileges required")
@@ -64,7 +80,7 @@ def require_admin(user: Principal = Depends(get_current_user)) -> Principal:
 
 
 def require_operator(user: Principal = Depends(get_current_user)) -> Principal:
-    """Admins and operators may command robots; viewers are read-only."""
+    """Operators, admins and developers may command robots."""
     if not user.can_command:
         raise ForbiddenError("Operator privileges required")
     return user

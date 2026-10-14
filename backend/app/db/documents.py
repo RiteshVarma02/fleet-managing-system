@@ -11,9 +11,19 @@ from bson.errors import InvalidId
 
 
 class Role(str, Enum):
+    """developer > admin > operator. Every role can do what the roles below it can."""
+
+    developer = "developer"
     admin = "admin"
     operator = "operator"
-    viewer = "viewer"
+
+
+ROLE_RANK = {Role.operator.value: 1, Role.admin.value: 2, Role.developer.value: 3}
+
+
+def role_rank(role: str) -> int:
+    """0 for unknown/retired roles (e.g. the old read-only `viewer`): no access."""
+    return ROLE_RANK.get(str(role), 0)
 
 
 class RobotStatus(str, Enum):

@@ -13,6 +13,9 @@ from app.db.documents import Role
 class LoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=256)
+    # Which login page was used. Optional; when given, the account must hold
+    # at least that role (an operator cannot sign in on the admin page).
+    portal: Optional[Role] = None
 
     @field_validator("username")
     @classmethod

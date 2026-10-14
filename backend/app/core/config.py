@@ -42,10 +42,15 @@ class Settings(BaseSettings):
     jwt_refresh_expiry_minutes: int = 7 * 24 * 60
     login_max_attempts: int = 5
     login_attempt_window_seconds: int = 15 * 60
+    # Seeded on startup if missing. Empty password = not seeded (production
+    # requires the developer one). In development, empty falls back to a
+    # throwaway default with a warning.
+    bootstrap_developer_username: str = "developer"
+    bootstrap_developer_password: str = ""
     bootstrap_admin_username: str = "admin"
-    bootstrap_admin_password: str = "admin123"
+    bootstrap_admin_password: str = ""
     bootstrap_operator_username: str = "operator"
-    bootstrap_operator_password: str = "operator123"
+    bootstrap_operator_password: str = ""
     cors_origins: List[str] = Field(
         default_factory=lambda: [
             "http://localhost:3000",
