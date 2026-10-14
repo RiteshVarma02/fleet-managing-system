@@ -2,8 +2,7 @@
 
 from app.db.repositories import (
     locations_repo,
-    map_state_repo,
-    maps_repo,
+    fleet_files_repo,
     pending_requests_repo,
     robot_registrations_repo,
     robots_repo,
@@ -13,8 +12,7 @@ from app.db.repositories import (
 
 # Backward-compatible aliases used across endpoints/services
 locations = locations_repo
-maps = maps_repo
-map_state = map_state_repo
+fleet_files = fleet_files_repo
 pending_requests = pending_requests_repo
 robot_registrations = robot_registrations_repo
 robots = robots_repo
@@ -23,16 +21,14 @@ users = users_repo
 
 __all__ = [
     "locations_repo",
-    "map_state_repo",
-    "maps_repo",
+    "fleet_files_repo",
     "pending_requests_repo",
     "robot_registrations_repo",
     "robots_repo",
     "tasks_repo",
     "users_repo",
     "locations",
-    "maps",
-    "map_state",
+    "fleet_files",
     "pending_requests",
     "robot_registrations",
     "robots",

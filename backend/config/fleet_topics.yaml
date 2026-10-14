@@ -46,7 +46,7 @@ robot_types:
   # ---------------------------------------------------------------------------
   waypoint_amr:
     description: Waypoint-graph AMR (route_manager + traffic manager, no Nav2)
-    capabilities: [waypoint_nav, telemetry, emergency, movement]
+    capabilities: [waypoint_nav, telemetry, emergency, movement, fleet_files]
     topics:
       # --- waypoint navigation ---------------------------------------------
       goal:                                     # server -> robot: waypoint NAME

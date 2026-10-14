@@ -41,3 +41,18 @@ Cost: the protocol file is vendored into `backend/app/services/` (Docker build c
 
 ## D12. Server pushes, robots do not pull
 Simple, auditable (who pushed what, per-robot result). Offline robots show "out of sync" and can be re-pushed.
+
+## D13. File changes are admin-only; reading is for every signed-in user
+Pushing a wrong graph to every robot is the most dangerous action in the system, so upload, rollback and push need admin (developer inherits). Operators only see the waypoint list and map. Revisit in Phase 4 when roles are final.
+
+## D14. Rollback = activate an older version, then push
+Activating never touches robots by itself. Reason: it separates "which file is the truth" from "send it", so a rollback can be reviewed before it reaches the fleet.
+
+## D15. Sync state is per (robot, kind), derived from version numbers
+`in_sync | out_of_sync | failed | never | no_file`, computed by one pure function from the active version and the robot's last acked version. A late ack (arrives after the push call timed out) is picked up on the next status read.
+
+## D16. The dashboard map is the active fleet map file
+The old `/maps` module (separate map uploads, SLAM, activate) is deleted. `GET /fleet-files/map/preview` returns the active map as PNG plus resolution/origin. Reason: one map, one source of truth; the Maps page is removed anyway.
+
+## D17. Waypoint coordinates are read tolerantly from the graph
+Only `id` and `name` are guaranteed by route_manager's graph, so `x`/`y` (also `pose.x`, `position.x`) are optional. Waypoints without coordinates still work for sending; they just cannot be drawn on the map.

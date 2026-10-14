@@ -88,3 +88,22 @@ def test_topic_names_come_from_fleet_topics_yaml():
 def test_robot_discovery_from_live_topics():
     names = ["/robot1/amr/goal", "/kumki/amr/goal", "/robot1/amcl_pose", "/amr/goal", "/a/b/amr/goal"]
     assert p.robots_from_topics("/{robot}/amr/goal", names) == ["kumki", "robot1"]
+
+
+def test_build_update_from_bytes_roundtrip(tmp_path):
+    import json as _json
+
+    graph = _json.dumps({"waypoints": [{"id": 1, "name": "A"}]}).encode()
+    update = p.build_update("graph", [("graph", "amr_path.json", graph)], "t", version="7")
+    assert update["version"] == "7"
+    out = tmp_path / "g.json"
+    p.apply_update(update, graph_path=str(out), map_dir=None)
+    assert out.read_bytes() == graph
+
+
+def test_backend_copy_is_identical():
+    from pathlib import Path
+
+    here = Path(__file__).resolve().parent
+    backend = here.parents[1] / "backend" / "app" / "services" / "fleet_file_protocol.py"
+    assert backend.read_bytes() == (here / "fleet_file_protocol.py").read_bytes()

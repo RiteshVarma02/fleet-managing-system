@@ -12,6 +12,7 @@ from typing import Dict, Type
 from app.ros.capabilities.arm_control import ArmControlCapability
 from app.ros.capabilities.docking import DockingCapability
 from app.ros.capabilities.emergency import EmergencyCapability
+from app.ros.capabilities.fleet_files import FleetFilesCapability
 from app.ros.capabilities.fork_control import ForkControlCapability
 from app.ros.capabilities.movement import MovementCapability
 from app.ros.capabilities.waypoint_nav import WaypointNavCapability
@@ -22,6 +23,7 @@ CAPABILITY_REGISTRY: Dict[str, Type] = {
     "waypoint_nav": WaypointNavCapability,
     "telemetry": TelemetryCapability,
     "emergency": EmergencyCapability,
+    "fleet_files": FleetFilesCapability,
     "docking": DockingCapability,
     "fork_control": ForkControlCapability,
     "arm_control": ArmControlCapability,

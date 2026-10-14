@@ -90,6 +90,7 @@ class Settings(BaseSettings):
     # `final_goal_reached` carries no goal id: a TRUE arriving this soon after a
     # new goal is treated as a late message from the previous leg and ignored.
     waypoint_arrival_debounce_seconds: float = 1.5
+    fleet_files_ack_timeout_seconds: float = 8.0
     max_task_repeats: int = 1000
     task_max_concurrent: int = 32
 

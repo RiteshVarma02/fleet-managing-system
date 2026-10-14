@@ -23,7 +23,6 @@ from app.db.repositories import robots_repo
 from app.middleware import RequestContextMiddleware
 from app.ros.manager import ros_manager
 from app.services import robot_service
-from app.services.map_service import map_service
 from app.services.registration_service import make_thread_handler
 from app.services.task_service import task_engine
 from app.services.telemetry_bus import telemetry_bus
@@ -62,18 +61,11 @@ async def lifespan(_: FastAPI):
 
     await task_engine.start()
 
-    # Best effort: restore the persisted active fleet map (served to the UI).
-    try:
-        await map_service.restore_active_map(db)
-    except Exception as exc:  # pragma: no cover - startup resilience
-        logger.warning("Active map restore failed: %s", exc)
-
     try:
         yield
     finally:
         logger.info("Shutting down")
         await task_engine.stop()
-        map_service.shutdown()
         ros_manager.shutdown()
         await telemetry_bus.stop()
         try:

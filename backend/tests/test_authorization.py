@@ -1,6 +1,6 @@
 """Endpoint authorization tests (M1/M2).
 
-Map and location *write* endpoints must require operator privileges; read
+Fleet-file (admin) and location *write* endpoints must require operator privileges; read
 endpoints may stay open to any authenticated user. `require_operator` is
 asserted to be in each write route's dependency chain and to actually reject
 the read-only `viewer` role.
@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.api.deps import Principal, get_current_user, require_operator
-from app.api.v1.endpoints import locations, maps
+from app.api.deps import Principal, get_current_user, require_admin, require_operator
+from app.api.v1.endpoints import fleet_files, locations
 from app.core.exceptions import ForbiddenError
 
 VIEWER = Principal(username="viewer", role="viewer")
@@ -37,35 +37,38 @@ def _routes(router):
     return [r for r in router.routes if getattr(r, "methods", None)]
 
 
-MAP_WRITE_PATHS = {
-    ("POST", "/maps/load"),
-    ("POST", "/maps/activate"),
-    ("DELETE", "/maps/{name}"),
+FILE_WRITE_PATHS = {
+    ("POST", "/fleet-files/graph"),
+    ("POST", "/fleet-files/map"),
+    ("POST", "/fleet-files/{kind}/versions/{version}/activate"),
+    ("POST", "/fleet-files/{kind}/push"),
 }
 
-MAP_READ_PATHS = {
-    ("GET", "/maps/current"),
-    ("GET", "/maps"),
+FILE_READ_PATHS = {
+    ("GET", "/fleet-files"),
+    ("GET", "/fleet-files/status"),
+    ("GET", "/fleet-files/map/preview"),
+    ("GET", "/fleet-files/{kind}/download"),
 }
 
 
-@pytest.mark.parametrize("method,path", sorted(MAP_WRITE_PATHS))
-def test_map_write_endpoints_require_operator(method, path):
-    route = next(
-        r for r in _routes(maps.router) if path == r.path and method in (r.methods or [])
-    )
-    deps = _dependency_callables(route)
-    assert require_operator in deps, f"{method} {path} must require operator"
+@pytest.mark.parametrize("method,path", sorted(FILE_WRITE_PATHS))
+def test_fleet_file_writes_require_admin(method, path):
+    route = next(r for r in _routes(fleet_files.router) if path == r.path and method in (r.methods or []))
+    assert require_admin in _dependency_callables(route), f"{method} {path} must require admin"
 
 
-@pytest.mark.parametrize("method,path", sorted(MAP_READ_PATHS))
-def test_map_read_endpoints_allow_any_authenticated_user(method, path):
-    route = next(
-        r for r in _routes(maps.router) if path == r.path and method in (r.methods or [])
-    )
+@pytest.mark.parametrize("method,path", sorted(FILE_READ_PATHS))
+def test_fleet_file_reads_allow_any_authenticated_user(method, path):
+    route = next(r for r in _routes(fleet_files.router) if path == r.path and method in (r.methods or []))
     deps = _dependency_callables(route)
     assert get_current_user in deps
-    assert require_operator not in deps, f"{method} {path} should not require operator"
+    assert require_admin not in deps and require_operator not in deps
+
+
+def test_waypoints_readable_by_any_authenticated_user():
+    route = _routes(fleet_files.waypoints_router)[0]
+    assert get_current_user in _dependency_callables(route)
 
 
 @pytest.mark.parametrize(

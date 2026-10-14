@@ -26,9 +26,9 @@ class Collections:
     tasks = "tasks"
     task_history = "task_history"
     locations = "locations"
-    maps = "maps"
-    map_state = "map_state"
     pending_requests = "pending_requests"
+    fleet_files = "fleet_files"
+    robot_file_state = "robot_file_state"
 
 
 def get_client() -> AsyncIOMotorClient:
@@ -81,7 +81,12 @@ async def ensure_indexes() -> None:
     await db[Collections.tasks].create_index([("created_at", DESCENDING)])
     await db[Collections.task_history].create_index([("task_id", ASCENDING), ("at", ASCENDING)])
     await db[Collections.locations].create_index([("name", ASCENDING)], unique=True)
-    await db[Collections.maps].create_index([("name", ASCENDING)], unique=True)
+    await db[Collections.fleet_files].create_index(
+        [("kind", ASCENDING), ("version", DESCENDING)], unique=True
+    )
+    await db[Collections.robot_file_state].create_index(
+        [("robot_id", ASCENDING), ("kind", ASCENDING)], unique=True
+    )
     await db[Collections.pending_requests].create_index(
         [("status", ASCENDING), ("created_at", ASCENDING)]
     )

@@ -1,4 +1,4 @@
-# ROS 2 base gives rclpy + nav2 message packages.
+# ROS 2 base gives rclpy + std/geometry/nav/sensor messages (no Nav2 in V1).
 FROM ros:humble-ros-base
 
 ENV PYTHONUNBUFFERED=1 \
@@ -9,9 +9,6 @@ WORKDIR /srv/app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3-pip \
-      ros-humble-nav2-msgs \
-      ros-humble-nav2-map-server \
-      ros-humble-slam-toolbox \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

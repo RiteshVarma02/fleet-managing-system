@@ -164,11 +164,38 @@ def build_map_update(yaml_path: str, sender: str = "") -> Dict[str, Any]:
     )
 
 
-def _envelope(kind: str, files: List[Dict[str, Any]], sender: str) -> Dict[str, Any]:
+def build_update(
+    kind: str,
+    files: List[tuple],
+    sender: str = "",
+    version: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build an update from in-memory files: `files` = [(role, name, bytes)].
+
+    Used by the backend, which stores files in the database instead of on disk.
+    """
+    if kind == "graph":
+        graph = [f for f in files if f[0] == "graph"]
+        if len(graph) != 1:
+            raise FleetFileError("graph update needs exactly one graph file")
+        validate_graph(graph[0][2])
+    elif kind == "map":
+        roles = {f[0]: f for f in files}
+        if "map_yaml" not in roles or "map_image" not in roles:
+            raise FleetFileError("map update needs map_yaml and map_image")
+        map_image_name(roles["map_yaml"][2])
+    else:
+        raise FleetFileError(f"unknown kind {kind!r}")
+    return _envelope(kind, [_file_entry(r, n, d) for r, n, d in files], sender, version)
+
+
+def _envelope(
+    kind: str, files: List[Dict[str, Any]], sender: str, version: Optional[str] = None
+) -> Dict[str, Any]:
     return {
         "protocol": PROTOCOL,
         "kind": kind,
-        "version": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "version": version or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "sender": sender,
         "files": files,
     }

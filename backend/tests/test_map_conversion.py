@@ -11,7 +11,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import numpy as np
-import pytest
 from PIL import Image
 
 from app.ros.map_codec import build_occupancy_grid, occupancy_grid_to_image
@@ -103,7 +102,6 @@ def test_round_trip_preserves_orientation():
 
 def test_round_trip_is_identity_for_mixed_map():
     """A realistic mixed map (obstacles, free space, unknown) round-trips exactly."""
-    rng = np.random.default_rng(42)
     arr = np.full((16, 24), UNKNOWN_PIXEL, dtype=np.uint8)
     arr[2:10, 3:7] = OCCUPIED_PIXEL   # obstacle
     arr[8:14, 12:20] = FREE_PIXEL     # free corridor
