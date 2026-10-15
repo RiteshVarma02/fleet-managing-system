@@ -4,7 +4,7 @@ Branch: `v1-waypoint-fleet` (never edit `waypointIntegration` or `V0Draft`).
 Updated after every working session. Newest status on top.
 
 ## In progress
-- Phase 6: README rewrite, hardware checks (stop_active type, route_manager restart command, real graph x/y format).
+- Phase 6 (hardware only): route_manager restart command for the receiver, real graph x/y format. Done: README rewrite; stop_active confirmed Bool.
 
 ## To do
 - Phase 2b: auto-push to a robot when it reconnects out of sync (optional).
