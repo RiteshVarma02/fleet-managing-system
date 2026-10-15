@@ -1,86 +1,129 @@
-# Fleet Management System
+# Fleet Management System (V1)
 
-Web control plane for a heterogeneous ROS 2 robot fleet: a FastAPI + MongoDB
-backend that owns the ROS runtime and per-robot domain bridges, and a React
-dashboard for administrators and operators.
+Web control plane for a fleet of waypoint-driven ROS 2 robots. A FastAPI +
+MongoDB backend owns the ROS runtime; a React dashboard gives operators, admins
+and developers their own panel.
 
-- Backend documentation and API reference: [`backend/README.md`](backend/README.md)
+- Backend details and API list: [`backend/README.md`](backend/README.md)
+- Pushing the graph JSON / map to robots from a terminal: [`tools/fleet_files/README.md`](tools/fleet_files/README.md)
+- Why things are built this way: [`docs/DESIGN_DECISIONS.md`](docs/DESIGN_DECISIONS.md)
+- What is done and what is next: [`docs/PROGRESS.md`](docs/PROGRESS.md)
+
+## How it works
+
+- **One ROS domain, no Nav2.** The server and every robot share one domain.
+  Robots are namespaced `/{robot}/...`; the robot id *is* its ROS namespace.
+- **Waypoints only.** To send a robot somewhere the server publishes the
+  waypoint **name** on `/{robot}/amr/goal` and waits for
+  `/{robot}/amr/final_goal_reached`, the same interface as `mission_commander.py`.
+  `route_manager` and `traffic_manager_node` must be running.
+- **Topics are never hard-coded.** Every topic name, message type and QoS lives
+  in [`backend/config/fleet_topics.yaml`](backend/config/fleet_topics.yaml).
+- **One graph and one map for the whole fleet.** Upload them on the website;
+  every robot gets a copy.
 
 ## Roles
 
-| Role | Landing page | Can do |
+Each role includes everything the roles below it can do.
+
+| Role | Lands on | Can do |
 | --- | --- | --- |
-| Administrator | `/fleet` | Monitor every robot on the map, approve/reject robot registrations (name + robot type), watch domain-bridge health, remove robots, connect/disconnect, jump into any console |
-| Operator | `/console` | Pick one robot, teleoperate it with the joystick, send Nav2 goals, dock/undock, fork/gripper commands, dispatch and cancel pick & drop missions, while still seeing the whole fleet on the map |
+| Operator | Operate | See the map and robot status, send a robot to a waypoint, build and run missions, Pause / Continue / Cancel, E-stop, manual drive |
+| Admin | Admin | Everything above, plus add / approve / connect / remove robots, upload and send the JSON graph and map, manage operator accounts |
+| Developer | Developer | Everything, plus view and reload the topic configuration, manage all accounts |
+
+The login page has a tab per role. The server refuses a login on a panel the
+account's role is too low for (an operator cannot use the Admin tab).
+
+## Using it
+
+**Go to a waypoint.** Pick a robot, type the waypoint name (or click it on the
+map), press Send.
+
+**Missions.** Press *Add stop* for each waypoint in order (or click waypoints on
+the map), set *Repeat* (for example 1 → 2 → 5 → 7 → 8 repeated 50 times), then
+choose a mode:
+
+- *Move continuously*: the robot goes stop to stop without waiting.
+- *Move on click*: the robot stops at every stop and waits for you to press
+  **Continue**. Starting the mission is the click for the first move.
+
+**Controls.** One set per robot: **Pause**, **Continue**, **Cancel mission**.
+
+**Emergency stop.**
+
+- A pressed physical button publishes `true` on `/{robot}/stop_active`
+  (`std_msgs/Bool`). The robot shows **red**, stops, and its mission is paused
+  (not failed).
+- *E-STOP* on the dashboard is the software equivalent.
+- While any E-stop is on, **nothing can move the robot**, manual drive included.
+- After release the robot stays stopped until an operator presses Continue.
+- Manual drive and E-stop are separate controls.
+
+**Status** shown on the map and cards: Offline, Idle, Moving, Paused, Waiting for
+click, E-STOP (button), E-STOP (software), Error.
+
+**Files (Admin → JSON & map files).** Upload a new graph JSON or map (`.yaml` +
+image), download any version, make an older version active again, then *Send to
+all robots*. The table shows which robots are up to date. Robots need
+[`fleet_file_receiver.py`](tools/fleet_files/README.md) running.
 
 ## Run it
 
 ```bash
-# 1. backend (see backend/README.md for the full setup)
-cd backend && cp .env.example .env
+# 1. backend (needs MongoDB; see backend/README.md)
+cd backend && cp .env.example .env     # set JWT_SECRET and the three bootstrap passwords
 docker compose up -d --build
 
 # 2. frontend
-cp .env.example .env      # VITE_API_BASE_URL=http://localhost:8000/api/v1
-bun install
-bun run dev
+cp .env.example .env                   # VITE_API_BASE_URL=http://localhost:8000/api/v1
+npm install
+npm run dev
 ```
 
-Sign in with the bootstrap credentials from `backend/.env`
-(`BOOTSTRAP_ADMIN_USERNAME` / `BOOTSTRAP_OPERATOR_USERNAME`) and change the
-passwords afterwards.
+The first start creates three accounts from `backend/.env`:
+`BOOTSTRAP_DEVELOPER_*`, `BOOTSTRAP_ADMIN_*`, `BOOTSTRAP_OPERATOR_*`. Change the
+passwords after signing in. In production the developer password is required.
 
-## Frontend architecture
+First-time setup in the UI: sign in as developer or admin, add your robots
+(*Admin → Add robot*, using each robot's ROS namespace), upload the graph JSON
+and the map, press *Send to all robots*.
+
+## Adding a new kind of robot
+
+Add an entry to `backend/config/fleet_topics.yaml` under `robot_types` (it can
+`extends: waypoint_amr` and add topics and capabilities). If it needs new
+behaviour, add one file in `backend/app/ros/capabilities/`. The robot-type
+picker and the controls shown for each robot follow from that; no frontend
+change is needed for the existing capabilities.
+
+## Frontend layout
 
 ```
 src/
-  lib/api/client.ts      fetch wrapper: bearer token, envelope unwrap, GET de-dup
-  lib/api/queries.ts     TanStack Query options + the whole polling budget
-  lib/api/telemetry.ts   one shared WebSocket, merged into the query caches
-  lib/api/types.ts       mirrors backend/app/schemas/*
-  lib/auth.tsx           JWT session, role routing, 401 handling
-  components/fleet/      FleetMap (canvas occupancy grid), Joystick,
-                         RobotCard, CapabilityPanel
-  routes/                login, _app layout (E-stop + health), fleet, console,
-                         maps (upload/activate, build from a robot, map sharing)
+  lib/api/        client (bearer token, envelope, file download), queries, one
+                  shared telemetry WebSocket, types mirroring the backend
+  lib/auth.tsx    session, role helpers, landing page per role
+  lib/robot-status.ts   one table: label and colour of every status
+  components/fleet/
+    FleetMap          zoom / pan / fullscreen map, robots, waypoints, route pins
+    WaypointSendBox   "go to waypoint" text box
+    MissionBuilder    Plus-button stops, repeats, continuous / move on click
+    MissionControls   the single Pause / Continue / Cancel set
+    EstopCard         E-stop (separate from driving)
+    TeleopCard        manual drive (disabled during an E-stop)
+    FleetFilesPanel   JSON + map upload / download / history / send / sync
+    AdminPanels       add robot, approvals, accounts
+  routes/         login, _app layout, console (Operate), fleet (Admin), dev
 ```
 
-### Keeping backend load low
-
-- **One WebSocket per tab.** `/telemetry/ws` delivers a single fleet-wide frame
-  per interval; samples are merged into the existing `robots` and
-  `robots/:id/status` caches, so components keep using the same hooks.
-- **Polling backs off when the socket is up:** fleet list 3s → 30s, per-robot
-  telemetry 1s → off. If the socket drops, polling resumes automatically, so the
-  UI degrades instead of freezing.
-- **Static data is fetched once:** robot types are cached for the session, the
-  occupancy grid for 10 minutes, locations for 5.
-- **Identical in-flight GETs are de-duplicated** in the client, so several
-  widgets reading the same resource cost one request.
-- **Teleop is throttled** in the joystick component and mission progress is read
-  from the task engine's in-memory state, never from a database scan.
-- **Capability-driven UI:** each robot reports its capabilities, so fork and
-  gripper controls only appear for robots that have them — adding a robot type
-  server-side needs no frontend change.
-
-## Facility maps
-
-The Maps page (`/maps`) is the single place to manage the fleet's facility map:
-
-- **Upload & activate** — upload a PNG/PGM/JPG that becomes the active fleet
-  map, published on the server domain's `/map`.
-- **Build from a robot** — pick a robot, *Start SLAM*, watch its grid grow live
-  (polled every 2s), then *Save map* (`.pgm`+`.yaml`+`.png` written straight
-  from the captured grid — no `map_saver_cli`) and *Activate* it fleet-wide.
-- **Use a robot's map** — on the console, promote a robot's own map to the
-  fleet map without saving it first.
-- **Send the map to robots** — toggle *map sharing* per robot: the server's
-  `/map` is bridged down to the robot's domain (`map_share_enabled`) so its
-  Nav2 can consume the static map.
+One WebSocket per browser tab carries live robot data; HTTP polling slows down
+while it is up and resumes if it drops.
 
 ## Testing
 
-- **Backend:** `cd backend && python -m pytest` — grid↔image round-trip,
-  ROS-domain assignment and domain-bridge config (with/without map-share).
-  Test dependencies live in `backend/requirements-dev.txt`.
-- **Frontend:** `npm run typecheck` (`tsgo --noEmit`) and `npm run lint`.
+```bash
+cd backend && pip install -r requirements-dev.txt && python -m pytest
+cd tools/fleet_files && python -m pytest
+npm run typecheck && npm run lint
+```

@@ -31,7 +31,6 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:5173"]}
       ROS_ENABLED: "true"
       ROS_DOMAIN_ID: "0"
-      DOMAIN_BRIDGE_ENABLED: "true"
       AUTOSTART_ROBOT_CONTROLLERS: "true"
     # ROS 2 DDS discovery needs the host network.
     network_mode: host
